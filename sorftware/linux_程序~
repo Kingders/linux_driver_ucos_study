@@ -1,0 +1,804 @@
+/*************************** 动静态函数库 **************************/
+
+.so 是动态函数库,.a是静态函数库,
+
+linux 下编译链接默认为动态函数库.如果使用静态库链接,使用编译选项 -static: gcc -static test.c -o test  (-o 指定输出文件名字test)
+如果编译时出现错误: cannot find -lc 指没有发现libc.a, l为lib简写
+
+reedeld -d xxx 读出xxx使用了那些静态函数库
+
+制作静态函数库:
+gcc -c aaa.c -o aaa.o	编译出aaa.o执行文件
+ar cqs libmylib.a aaa.0	打包到静态库 libmylib.a
+拷贝 到 系统库目录 /usr/lib 里
+
+gcc -static test.c -o test	相当于 gcc -static test.c -lc -o test	默认情况 编译只链接到静态c库, 
+要使用别的静态态库,则要明确指出: gcc -static test.c -lmylib -o test	
+
+gcc test.c -o test	相当于 gcc test.c -lc -o test	默认情况 编译只链接到动态c库, 
+要使用别的动态态库,则要明确指出: gcc test.c -lmylib -o test	
+
+制作动态函数库:
+gcc -c aaa.c -o aaa.o	编译出aaa.o执行文件
+gcc -shared -fPIC aaa.0	libmylib.so 打包到动态库 libmylib.so (-fPIC表示输出对象模块是按照可重定位地址方式生成的)
+拷贝 到 系统库目录 /usr/lib 里
+
+/*************************** 系统调用_文件编程 **************************/
+见file_ops例子
+这里使用的是linux 系统调用的函数操作.
+
+/*************************** 库函数_文件编程 **************************/
+见libc_file_ops例子
+这里使用c函数库操作,方便,window inux 移植
+函数先打开并操作一个流,并不是直接操作文件.
+
+/*************************** 时间编程 **************************/
+见time例子
+
+/*************************** 进程 控制 编程 **************************/
+临界区:一般指,每时每刻只允许一个进程或线程执行的代码段
+进程同步:一组进程按照一定顺序执行,不允许后执行的先执行发生 
+调度算法:先来先服务,短进程优先,高优先级优先,时间片轮转
+
+/*************************** 无名管道 pipe**************************/
+数据传输:无名管道pipe,有名管道FIFO,
+资源共享:信号量
+事件通知:信号(signal)
+IPC(interprocess communication):unix进程间通信, 
+				system V, 
+				prosix(portable operating system interface)可移植,不局限于linux,可window 
+
+pipe特点:
+进程读空管道时进程阻塞,进程写满管道时进程阻塞,管道容量64kb
+管道单向意思:只能从fd[1]写入数据,从fd[0]读出数据.
+见pipe例子
+
+fifo 特点:
+同一时间,至少1个以O_WRONLY模式打开fifo,至少1个以O_RDONLY模式打开fifo,
+如果进程都以同一个模式打开,那么都进程都被阻塞在打开函数里.
+见fifo例子
+
+注意给管道写入NULL,也算写入了一个字节,管道有一个实时计数器统计此时此刻的字节数量
+
+
+/*************************** 信号(signal) **************************/
+见signal例子.
+
+/*************************** 信号量 permission denied 未解决 **************************/
+信号量semaphore,见例子semaphore例子(互斥模型):现在主要出现了操作信号量时,permission denied 未解决
+
+信号量属于ipc的一种子功能
+
+关于键值:
+每个ipc都有一个键值,进程通过键值找到信号量并访问,
+由于每个键值对于整个linux系统唯一的,,键值的生成很讲究,如果自己任意指定一个数作为键值来使用,说不定已经被用了,而出现复用,而出现冲突,
+所以,有巧妙的生成可用键值的方法:
+	ftok(文件名,项目id),
+	每个存在硬盘里的文件,(文件夹也是一个文件,里面包含列表信息)都有一个标识的唯一的文件名id号,
+	文件名id号 + 项目id号 = 一个键值
+	键值理解:
+	每个执行隶属于同一个项目的并行进程,都要访问同一个文件或文件夹内容时,都需要一个并行访问的机制,有序访问目标内容,
+	这个机制由共同遵守的同一和唯一的键值,所提供的各类IPC子功能共同实现,
+	并行进程,隶属于同一个项目,都要访问相同的资源,就已经表现出遵守的同一和唯一的某个键值 的行为!
+
+信号量的典型使用 互斥模型:
+	多个进程访问同一个资源或文件时,先获取信号量,信号量会-1,当信号量为0时,表示,正被别的进程使用,
+	当某进程用完后,释放信号量,信号量+1,别的进程检测到正值,便可以访问文件或资源了.
+
+
+现在主要出现了操作信号量时,permission denied 未解决
+
+
+信号量的典型使用 同步模型
+生产者,释放信号量,消费者提取信号量,且信号量初始值一定为0
+这样,生产者完才释放信号量,消费者才可以提取信号量,然后获取生产好的产品,
+这时信号量回归0,等下一次生产者生产完产品释放信号量,消费者才可以再次消费产品.
+
+同步模型中,如果确保,生产者程序,一定先与消费者程序执行,那么,信号量创建并初始化为0的操作可以放到生产者程序里,
+不然就得有一个第三方程序创建并初始化信号量为零
+
+semctl(semid,2,SETVAL,0);	//把信号量集semid的编号2的信号量设置为0.
+
+
+/*************************** 共享内存 **************************/
+见share_memory例子
+
+先创建共享内存,然后映射到用户内存,
+注意,只能root状态下运行,依然出现权限问题
+
+
+/*************************** 消息队列 **************************/
+见message例子
+注意,read write 同时在root状态下才能正常运行,运行,依然出现权限问题
+
+/*************************** 多线程 互斥锁 条件变量 (多线程返回值引起的core-dump 未解决)**************************/
+与创建自己的的进程共享代码和数据段,
+但有自己独立的栈
+进程一旦结束,其生成的线程也强制异常退出,所以进程要等线程都结束才可以结束
+
+
+见thread例子:
+
+使用线程时,编译时必须链接到pthread库: gcc -lpthread 错误,尽管网上都这么教,
+				     gcc -pthread 正确,通过 man read_create 发现
+
+线程互斥:使线程有纪律访问共同资源
+使用互斥锁 mutex
+
+线程同步:使线程按顺序执行
+使用条件变量 cond
+
+/*************************** 网络编程 **************************/
+linux只使用了,tcp/ip的4层模型,(非osi的7层模型):应用层,传输层,网络层,网络接口层
+
+liuux 网络模型 基于socket这种套接字特殊文件模型的
+
+见tcp例子,见udp例子 并行服务器 tcp_server例子
+
+并行服务器,就是父进程负责监听新连接,子进程负责实现数据通讯
+
+
+字节序
+小端模式:数据从低地址开始放,
+大端模式:数据从高地址开始放
+网络发送数据按大端模式,也称为网络字节序
+
+如果机子属于小端模式,通过网络发数据时,要都先转成大端模式(网络字节序)
+即主机字节序转成网络字节序 
+
+htonl(uint32_t hostlong)	//32位数据从主机字节序转成网络字节序  (假设主机字节序是小端模式)
+htonl(uint16_t hostshort)	//16位数据从主机字节序转成网络字节序  
+
+ntohl(uint32_t hostlong)	//32位数据从网络字节序转成主机字节序  (假设主机字节序是小端模式)
+ntohs(uint32_t hostlong)	//16位数据从网络字节序转成主机字节序
+
+一个查看系统占用端口信息的命令: netstat -tunlp
+
+/*************************** 守护进程 文件权限码 **************************/
+守护进程(daemon)特点:
+	后台进行,不占用控制终端,(指终端命令执行进程后,进程后台运行,终端可以继续输入其他命令,但后台进程仍然有机会受控制台终端)
+	独立控制终端,不被控制终端控制 (ps aux 命令后,发现进程的tty处为"?",控制台终端不可能控制程序)
+	周期性运行
+
+所以独立于控制终端 和 后台进行是两个概念. 然而,使用printf时都可以,继续把内容显示到控制终端上
+
+后台运行方法:
+	父进程 fork 一个子进程后,父进程exit()结束,此时子进程后台运行.
+
+独立于控制终端方法:
+	后台进行的前提下,子进程加入setsid();从而独立于终端.
+
+由于守护进程是子进程,所以需要拜脱父进程的限制:
+	1,进程的工作目录,由于守护进程继承了父进程的工作目录,然而我们需要守护进程运行在"/"根工作目录下, 使用chdir("/")
+	2,文件权限问题,子进程保留了父进程的文件访问权限,但守护进程希望对文件访问有全权限,所以使用 umask(0)!!
+	3,关闭不必要的文件,子进程继承了父进程打开了的文件,然而,这些打开了的文件不一定使用,说以close(fd)掉!
+
+文件权限问题补充:
+	文件权限码: 
+	r:4		创建者  同组用户  其他用户
+	w:2		   7      7         7		:文件允许所有用户所有操作
+	x:1		   0      1         2		:文件不允许创建者所有操作,允许同组用户执行操作,允许其他用户写操作,
+	-:0		   3      4         5		:文件允许创建者执行和写操作,允许同组用户读操作,允许其他用户执行和读操作,
+			   6      6         6           :文件允许所有用户的读和写操作
+
+	文件权限屏蔽掩码: 
+	r:4		创建者  同组用户  其他用户
+	w:2		   7      7         7		:文件不允许所有用户所有操作
+	x:1		   0      1         2		:文件允许创建者所有操作,不允许同组用户执行操作,不允许其他用户写操作,
+	-:0		   3      4         5		:文件不允许创建者执行和写操作,不允许同组用户读操作,不允许其他用户执行和读操作,
+			   6      6         6           :文件不允许所有用户的读和写操作	
+	
+	umask(0):相当于umask(000),表示 文件允许所有用户所有操作
+	umask(777):表示文件不允许所有用户的读和写操作
+
+
+/*************************** shell文本 **************************/
+
+"#"是注释符
+
+脚本开头: #! /bin/bash 指明了解析这文本的解析器bash的路径,
+或者:	  #! /bin/sh   指明了解析这文本的解析器sh的路径,
+
+变量:	c=/home/smart210	//c是一个路径变量
+	b="hello"		//b是一个字符串变量
+	a=5			//a是一个数字变量
+
+命令行参数: 在终端执行脚本文件时也输入了一些命令 如 ./welcome.sh 345 abc kity 
+	在监本文件里可以用以下符号得到参数信息:
+	$# 显示命令行参数的个数 算上 ./welcome.sh 这个本身 即 4
+	$* 显示所有命令行的参数值,各个参数间以空格隔开 算上 ./welcome.sh 这个本身 即 ./welcome.sh 345 abc kity
+	$0 显示命令本身 即 ./welcome.sh
+	$1 显示第一个参数 即 345
+	$2 显示第二个参数 即 abc
+	$3 显示第一个参数 即 kity
+
+数学运算:例: var=`expr 20/10`
+	必须使用反单引号包数学运算括住,还有加上 expr 前缀
+
+if语法:
+	if [ condition ] 		//中括号"["和"]"的两边都要有空格" "号
+	then
+		commands		//condition条件为真时执行
+	else
+		commands		//condition条件为假时执行
+	fi				//if结束
+	condition 的使用格式:
+				数字	字符串		例:	if [ $a = $b } 		//注意:]"的右边有空格" "号
+			相同	-eq	=			if [ $a -gt $b ] 
+			不同	-ne	!=			if [ $a -eq $b ]
+			大于	-gt	>			if [ -z $b ]
+			小于	-le	<			...
+		     大于或等于	-ge
+		     小于或等于	-le
+			为空		-Z
+		       不为空		-n
+	condition 的针对文件的使用:			例:	if [ -r Sfolder ] 	//注意:]"的右边有空格" "号
+		-e	文件已存在				if [ -f Sfolder ]
+		-e	文件已存在
+		-f	文件是普通文件
+		-s	文件大小为零
+		-d	文件是一个目录
+		-r	文件对当前用户可读取
+		-w	文件对当前用户可写入
+		-x	文件对当前用户可执行
+	其实 [ condition ] 就是一种条件运算的脚本命令, 可以单独使用,或者配合if,while 等使用
+
+for语法:
+	for var in list		//依次取出list里每一个var值,list有多少个var 就循环多少次
+	do			//循环开始
+		commands	
+	done			//循环结尾
+	例子:	list="mon tun wed thr fri sat sun"
+		for day in $list	//注意 day 前没有$符号
+		do
+			echo $day	//显示$day变量
+		done
+
+while语法:
+	while [ condition ] 		//与 if 一样,使用 条件运算,中括号"["和"]"的两边都要有空格" "号
+	do			//循环开始
+		commands	
+	done			//循环结尾
+	例子:	var=10
+		while [ $var -gt 0 ] 	
+		do
+			var=`expr $var -1`
+			echo $var	
+		done
+		//var循环减1,直到变为0
+
+sed解析命令;
+	sed 操作选项 '命令' 文件名	//sed 一般是把文件按操作 显示到终端屏幕上的命令
+		-n	p	
+		-e	a
+		-i	c
+			d
+			s
+	-n:指定处理后只显示该行
+	-e:进行多项编辑任务
+	-i:直接修改原文件的文件内容,而不屏幕输出文件
+	p:打印匹配行
+	a:新增
+	c:替代一行
+	d:删除定位行
+	s:替代一行中的某些部分
+	例子:
+		sed -n '2p' tem.txt	//只显示tem.txt文件第2行
+		sed -n '1,3p' tem.txt	//显示tem.txt文件第 1 至 3 行
+		sed -n '/mov/'p tem.txt	//显示tem.txt文件中 含 mov 的行
+		sed '2d' tem.txt	//显示tem.txt文件,但不显示第2行
+		sed '3,$d' tem.txt	//显示tem.txt文件,但不显示第 3 至最后1行, $ 这里代表最后1行
+		sed -n '/hello/p' tem.txt	//显示tem.txt文件中 含 hello 的行 的行号
+		sed '1c hi' tem.txt	//显示tem.txt文件,但把第1行内容换成hi显示
+		sed -n '/hello/p' tem.txt | sed 's/hello/bird/g'	
+			//显示tem.txt文件, 把含 hello 内容的行的 hello 内容换成 hello/bird 然后才显示
+		sed -i '$a bye' tem.txt		//不显示tem.txt文件,但源文件最后一行 新添 bye 这个内容
+
+awk分析器:(未完待续)
+
+
+/*************************** select 阻塞IO 多路复用 **************************/
+
+阻塞io :一般指,调用的函数想得到某些资源,却暂时不能访问资源,于是整个进程暂停阻塞在此处,直到能够得到资源才会执行进程下一步操作
+
+多路复用:一个进程要处理 多种并行,不连续的没有先后次序,一定程度上相互独立的事物, 这些事物对于进程来说是多路,这个进程对于这些事物来说是复用
+	
+多路复用的例子:	一个进程,要读取多个 fifo 的内容,
+		一个进程,要处理tcp,也要处理udp.
+
+另外通过学习,知道,什么对于一个进程来说,fifo socker,普通文件...等,共用一套文件描述符号!!!
+	比喻打开A普通文件时返回文件描述符号值为 1 ,
+	当接着打开fifo时的符号值就不能为1,只能为1以后,例如 2 ;
+	接着建立socker时的符号值也不能为 1,和 2, 只能为 1,2,以后,例如 3 ;
+
+
+select机制,先把希望访问的资源的文件描述符,加入到待访问队列,
+	执行select时, select 会不断阻塞在不断轮询待访问队列里的成员,
+	当一次轮训下来,发现没有满足条件的,执行下一次轮询,
+	当一次轮训下来发现某个,或某几个成员达到条件时,把这些成员标记就绪.然后完成select跳出
+	用户从队列中标记的成员执行操作
+使用指南:
+	int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout);
+	nfds: 待访问队列里,文件描述符号值fd最大的成员的 fd值+1=nfds
+	readfds: 读就绪标记位的位置,
+	writefds: 写就绪标记位的位置,
+	exceptfds: 执行就绪标记位的位置
+		(fd_set是就绪标记位类型,如果fd_set类变量为16格字节,表示,允许文件描述符号值fd 0 ~ 255 的资源加入 待访问队列,
+		 例如,fifo1 文件描述符值为 46,由于处于0 ~ 255,所以可以加入 等待读访问队列里,当select 探测到fifo1有内容可读时,
+		 readfds 指向的 fd_set 变量的第 46 位,将标记为 0 !!,即告诉用户可以读取fifo1内容了,访问完成后,记得给 这个第46位 置 1,
+		 如果不置 1 ,保持 0,下次select时,轮询到第 46 个成员时直接跳过,并不检测fifo1是否可读.
+	struct timeval {
+		long    tv_sec;         /* seconds */
+		long    tv_usec;        /* microseconds */
+	};	//select将等待的时间,如果,在这段时间里轮询还是没有找到,就绪可访问的资源时,就结束select,不再处理
+		//填 NULL 表示,无限轮询等待下去,直到找到就绪可访问的资源为止.
+	总计,select的轮询特性:	每一轮轮询都是从成员的 fd = 0 开始,到 fd = nfds-1 结束,
+				轮询每一个成员时,先检查对应 fd_set 对应位是否为1,若为零则跳过该项检测,
+				若对应位为 1, 检测该项是否就绪,若就绪就清零,否则,保持为 1 .
+
+例子;
+	//处理一堆可读的 fifo,和socker
+	int sockfd = 0;
+	int confd = 0;
+	int i = 0, j = 0;
+	fd_set fd_read[2];		//设置两个fd_set,fd_read[0]记录初始状态,fd_read[1]用于记录select结果
+	int clifd[FD_SETSIZE]; 	//要加入读功能待访问队列 的 文件描述符队列
+	......
+	FD_ZERO(&fd_read[0]); 	//清空fd_read[0]所有位
+	FD_SET(sockfd0, &fd_read[0]); //将sockfd0添加到fd_read[0]描述集中，也就是说将sockfd对应的fd_read[0]位中 置 1
+	FD_SET(fifo0, &fd_read[0]); 
+	FD_SET(sockfd1, &fd_read[0]);
+	FD_SET(fifo0, &fd_read[0]); 
+	.......				//fd_read[0]记录了初始状态
+	fd_read[1] = fd_read[0];	//拷贝初始态到用于selec()操作的fd_read[1]
+	clifd[0] = sockfd0,	//用户整理文件描述符,方便后续使用
+	clifd[1] = fifo0,
+	clifd[3] = sockfd1,
+	clifd[4] = fifo1,
+	......
+	for(...)
+	{	
+		fd_read[1] = fd_read[0];	//恢复fd_read[1]到初始态,
+		//select轮询资源的可读情况,阻塞进程,直到有资源就绪,可读时,返回,同时,fd_read[1]也相应改变.
+		ret = select(max_fd(clifd, FD_SETSIZE) + 1, &fd_read[1], NULL, NULL, NULL);
+		//处理
+		if(FD_ISSET(sockfd0, &fd_read[1]));	//检查就绪情况,实际操作检查对应位是否被 select() 清零,若被清零,表示资源可读
+			{读访问等操作...}
+		if(FD_ISSET(fifo0, &fd_read[1]));
+			{读访问等操作...}
+		.......
+	}
+	//清除待访问队列
+	FD_CLR(sockfd0, &fd_read[0]);	//把sockfd0在fd_read[0]对应位清零，意义相当于从select()检测的等待访问队列里踢出sockfd0,
+	FD_CLR(fifo0, &fd_read[0]);	//然而在这 例子 并没有什么用,因为select()操作的是fd_read[0]的副本fd_read[1],
+	FD_CLR(sockfd1, &fd_read[0]);	//而且有可能select(),已经对这项清零了,所以清除待访问队列这个步骤,没有多少实际意义
+	FD_CLR(fifo0, &fd_read[0]); 	//只能认为是 用于认识 FD_CLR() 这个函数功能
+	.....
+
+
+/*************************** epoll 阻塞IO 多路复用 **************************/
+
+epoll是一个更好的多路复用机构,对比select来说,select阻塞自身进程时,是不停地轮询,直到遇到就绪的资源,轮询占据cpu资源
+而epoll并非通过轮询而是与中断相关的技术, 阻塞自身进程时,也休眠进程,释放cpu,当有资源就绪时会唤醒进程,继续执行
+
+重申 fd 对于fifo socker 普通文件 等等 是共用的一套资源,某一个fifo用了某个号码,新一个socker就不能用这个号码,以此类推 
+
+
+int epoll_create(int size);
+	创建一个epoll特殊文件并返回 对应文件描述符符号fd,
+	即与打开了的fifo 普通文件 创建了的socker一样占据一个fd,
+	由于也算是一个打开了的文件,所以进程结束时要调用 close() 关闭并释放空间.
+	在旧版内核,size 表示要监听多少个事件,epoll文件会预划分多少个存放事件数据的空间, 
+	在新版内核,size 被忽略,因为内核会实时动态分配空间,所以size这个参数 并没有什么用
+int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+	epfd: 是 epoll特殊文件的文件描述符符号
+	op:操作宏参数:	EPOLL_CTL_ADD：注册新的 要监听的fd 到epfd中；
+			EPOLL_CTL_MOD：修改已经注册的 fd 的监听事件；
+			EPOLL_CTL_DEL：从epfd中删除一个fd；
+	fd:被op操作的 fd  
+	event: fd被监听的事件内容:
+           typedef union epoll_data {
+               void        *ptr;
+               int          fd;		//被监听事件面向的fd,即与上述 被op操作的fd一致
+               uint32_t     u32;
+               uint64_t     u64;
+           } epoll_data_t;
+
+           struct epoll_event {
+               uint32_t     events;     //被监听哪一些事件,即被监听的类型,见下述
+               epoll_data_t data;       
+           };
+		events:被监听的类型
+			EPOLLIN ：表示对应的文件描述符可以读（包括对端SOCKET正常关闭）；	
+			EPOLLOUT：表示对应的文件描述符可以写；
+			EPOLLPRI：表示对应的文件描述符有紧急的数据可读（这里应该表示有带外数据到来）；
+			EPOLLERR：表示对应的文件描述符发生错误；
+			EPOLLHUP：表示对应的文件描述符被挂断；
+			EPOLLET： 将EPOLL设为边缘触发(Edge Triggered)模式，这是相对于水平触发(Level Triggered)来说的。
+			EPOLLONESHOT：只监听一次事件，当监听完这次事件之后，如果还需要继续监听这个socket的话，
+				      需要再次把这个socket加入到EPOLL队列里
+int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout);
+	监听事件,并以休眠的方式阻塞进程,释放cpu资源
+	epfd: 监听操作执行对应的 epoll特殊文件 的fd
+	events: struct epoll_event 结构的数组指针,当某个或某些,监听事件满足条件就绪后,其对应的event结构体变量会压入events数组
+	maxevents: 每次epoll_wait输出就绪监听事件的最大数量,例如某次epoll_wait中有128个事件就绪,但是maxevents为40,
+		   只能输出其中40个监听就绪事件供用户操作,剩下的留着下次epoll_wait,继续输出,因为下次epoll_wait一开始就检测到就绪还没处理的事件
+	timeout:毫秒级别等待时间,当过时还没有监听时间就绪,就唤醒休眠进程,epoll_wait返回 0,
+		填 -1 表示 无限等待,直到有监听事件就绪
+
+epoll多路复用监听深入:
+	首先建立 epoll文件,把要监听的epoll_event结构信息加入文件,epoll_wait开始了阻塞监听
+	epoll_wait先清空了 events数组
+	监听的事件就绪后会像触发中断一样,自动把就绪事件信息顺序传入events数组,
+	每过一段比较短的时间的时间后,epoll_wait检查events是否有内容,若有,就返回events里放入了多少个就绪事件,若没有,继续等待
+	如果设了timeout,且等待到超出 timeout 时也没有就绪事件,便返回0
+	struct epoll_event.events 是一个复用项:(两种 不同的 置1含义)
+		1,在EPOLL_CTL_ADD前,给event.events 中某些位置 1, 表示了 要监听的fd的事件的类型
+		2,查看events[X].events 可以知道是事件的那些监听类型已经就绪了,这些功能项对应位会置1,表示就绪了
+		3,最后,这里与select不一样,就绪了的事件对应的位 置 1了,但是我们没有必要做清零 这一类手动清flag工作.
+
+
+例子:
+	//监听fifo, socker
+	#define MAXEVENTS	40
+	...
+	int epfd;	//epoll特殊文件的 文件描述符符号(与可以叫句柄)fd
+	struct epoll_event evt;		//一个暂存数据的变量
+	struct epoll_event *evts;	//一个放置监听就绪事件 的数组 的指针
+	...
+	epfd = epoll_create(0);	//创建一个epoll文件,参数数字随便填,新版内核直接忽略不用这个参数
+	evts = calloc (MAXEVENTS, sizeof(evt));	//创建一个epoll_event数组,保存返回的就绪的监听事件数据  
+	...
+	while(...)
+	{...
+		//插入 i 个 socker 读访问是否就绪的监听,	
+		for(...)
+		{
+			event.data.fd = sockfd[i];		//填写要监听的 fd
+			event.events = EPOLLIN | EPOLLET;	//填写要监听的事件的类型:能读入访问,边缘触发方式  
+			ret = epoll_ctl (epfd, EPOLL_CTL_ADD, sockfd[i], &event);	//插入监听事件
+		}
+		//又插入 j 个 fifo 读访问是否就绪的监听,	
+		for(...)
+		{
+			event.data.fd = fifo[i];		//填写要监听的 fd
+			event.events = EPOLLIN | EPOLLET;	//填写要监听的事件的类型:能读入访问,边缘触发方式  
+			ret = epoll_ctl (epfd, EPOLL_CTL_ADD, fifo[i], &event);	//插入监听事件
+		}	
+		//epoll阻塞并休眠进程,直到有事件就绪唤醒并返回
+     		n = epoll_wait (epfd, evts, MAXEVENTS, -1);	//有就绪事件时,返回实际传递回来了多少个就绪事件, 
+								//由于各种问题.就绪事件不一定等于实际传递回来的就绪事件不一定等于MAXEVENTS
+								//但是重复调用epoll_wait,总会解决传递完所有甚至上次,上几次未处理的就绪事件
+								//传递回来的就绪事件的信息都会拷贝到evts数组里
+		//轮询解决就绪事件evts[0]
+		if(sockfd{0} == evts[0].data.fd )	//如果fd是sockfd[0]的fd,表示sockfd[0]可以执行读操作/或者边缘操作了
+			sockfd[0]的相关操作...
+		else if(sockfd{i} == evts[0].data.fd )
+			....
+		else if(fifo{j} == evts[0].data.fd )
+			fifo[i]的相关操作...
+		//轮询解决就绪事件evts[1]
+		....
+		//轮询解决就绪事件evts[n]
+	}
+	//进程结束前
+	ret = epoll_ctl (epfd, EPOLL_CTL_DEL, sockfd[0], &event);	//删除监听事件操作,同理这个操作删除所有监听事件
+	,,,
+	close(epfd)	//或者可以不用执行删除监听事件的操作,直接close epfd,一定要有close epfd
+
+
+
+
+
+
+
+
+
+
+
+
+
+////////////////////////////以下讨论的功能函数,都只适用在内核进程,内核模块,而不适用于用户进程
+
+/*************************** 字符设备驱动 **************************/
+
+
+linux 三大基本设备驱动,字符设备驱动,块设备驱动 网络设备驱动
+
+设备驱动一般包括两个方面,一个是注册的设备驱动及操作集,另一个是硬件设备映射的逻辑设备文件.
+
+一个是注册的设备驱动会自动在 /proc/devices 添加信息:设备的主设备号,和设备名
+
+mknod /dev/i2cabc 8 3	//这样的命令是给初始化设备驱动时没有创建映射逻辑设备文件的驱动设备 创建逻辑设备文件
+			//8是已经注册了的主设备号,3是自定义的次设备号
+
+字符设备必须有的描述结构: struct cdev
+设备驱动是以内核模块的方式加入内核,但不能说内核模块就是设备驱动的架构,
+内和模块可以给内核加载许多不同情况和不同功能的内容,包括设备驱动
+
+内核模块基本框架:
+#include <linux/module.h>
+#include <linux/init.h>
+int chardev_init()
+{...	return 0;
+}
+int chardev_exit()
+{...	return 0;
+}
+module_init(chardev_init);
+module_exit(cahrdev_exit);
+
+
+确定系统使用的内核源码并下载
+输入：apt-cache search linux-source //查看内核版本
+输入：apt-get install linux-source-3.13.0 //获取对应版本的内核，默认安装在/usr/src目录下
+tar -jxvf /usr/src/linux-source-3.13.0.tar.bz2 -C /usr/src/linux-3.13.0		//解压源码到 /usr/src/linux-3.13.0
+亲身写一字符设备感受 见 char_device 例子.基于本机的内核版本,用于此pc
+
+makefile文件;
+obj-m := chardev.o
+# KDIR := /usr/src/linux-3.13.0/linux-source-3.13.0	//错误
+KDIR := /usr/src/linux-headers-4.2.0-42-generic		//可编译,实际上不需要源码,只需要必要的头文件
+all:
+	make -C $(KDIR) M=$(PWD) modules
+
+clean:
+	rm -f *.ko *.o *.mod.o *.symvers *.bak *.order
+
+此外,测试ioctl 功能:
+ioctl 主要是做控制硬件功能,即更改硬件配置寄存器一类工作,虽然使用write,和read 也可以,但是并不主要针对控制硬件,相比下ioctl做的控制更加方便有效率 
+ioctl(fd,unsigned int cmd,unsigned long arg);	ioctl是文件操作集里的一个函数
+fd,是打开的文件的文件描述符, 
+cmd组成: 幻数(命令类型) | 命令序号 | (命令读/写方向) | 命令读/写使用的1个参数的长度
+arg:命令读写使用的参数,参数根据实际操作,可填或是NULL
+
+cmd:是一个组合数,不便阅读,需要宏化:自定义一个命令宏头文件 例如:
+chardev_cmd.h: 
+#define CHAR_MAGIC 'c'	//宏定义一个命令类型
+#define CHAR_RESET _IO(CHAR_MAGIC,0)	//使用 _IO 组合一个序号为0的命令,因为,不需要给设备读写数据,所以不需要指定命令读/写方向及其参数的长度
+#define CHAR_CHECK _IOR(CHAR_MAGIC,1,int)	//使用 _IOR 组合一个序号为1的命令,是读命令,读出参数大小为 int 型
+#define CHAR_FILL _IOW(CHAR_MAGIC,2,char)	//使用 _IOW 组合一个序号为2的命令,是写命令,写入参数大小为 char 型
+...(_IO(), _IOR(), _IOW() 都是其他包装的宏,但是这里不需要包含这些宏的头文件,只要,设备驱动文件,还有用户程序文件包含sys/irctl.h就好了)
+然后,chardev.c:
+头文件添加,#include "chardev_cmd.h"
+添加函数:
+long char_ioctl (struct file *fd, unsigned int cmd, unsigned long arg)
+{
+	switch (cmd) {
+		case CHAR_RESET :
+			...
+			break;
+		case CHAR_CHECK :
+			...
+			break;
+		case CHAR_FILL :
+			break;
+		....	
+	}
+		
+}
+file_operation集添加
+	.unlocked_ioctl = char_ioctl,
+然后建立一个测试的用户程序:
+包含头文件 #include "chardev_cmd.h"
+使用调用来实现ioctl:
+	ioctl(fd,CHAR_RESET,NULL);
+	ioctl(fd,CHAR_fill,2345);
+
+/*************************** 块设备驱动 **************************/
+
+linux定义一个块一般为512字节
+
+体验:
+insmod	simple-blk.ko	//加载simple-blk.ko驱动模块,这里在内存创建了 1mb 磁盘空间,并自动创建了逻辑设备文件simple_blk0,并映射
+ls -l /dev/simple_blk0	//列出了simple_blk0文件的属性信息,(开头b,表示是块文件,c是字符文件,l是链接文件,d是文件夹,也称为文件目录文件)
+mkfs ext3 /dev/simple_blk0	//格式化成ext3文件系统
+mkdir -p /mnt/blk_disk1		//建立一个文件目录
+mount /dev/simple_blk0 /mnt/blk_disk1/	//把逻辑设备块文件 挂载 到这个目录,相当于把这个第三方磁盘映射到文件目录,然后变得可访问.
+然后便可以往里头读写存放文件
+umount /mnt/blk_disk1	//解除银盘挂载映射
+
+快设备访问模型:
+linux把不同的文件系统的文件的访问接口都集中起来到VFS,通过VFS完成访问各个文件系统的文件:
+		VFS(虚拟文件)
+____________________________________________ 
+	|	|	|	|	|							
+	ext2	NFS	FAT	ext3	其他块设备文件文件系统
+比如不同文件系统文件都可以通过 read 来访问
+
+write,read,open等,把请求传递到VFS,
+VFS再把处理请求,并根据结果,要么从cache,读取高频访问数据;要么把进一步访问请求传递到实际文件系统, 
+实际文件系统所在层叫映射层,
+(文件系统)映射层处理请求:解析要访问的文件由多少个块,都分别在什么位置,然后生成进一步请求传递到通用块层
+通用块层工作:按上层需求做成bio结构,(与扇区相关),再传递到I/O调度层
+I/O调度层:通过算法(电梯调度算法)调整bio的I/O操作访问扇区先后顺序,务求提高访问硬件的效率 最终生成i/o操作访问请求,传递到块设备驱动
+快设备驱动:i/o操作访问请求挂到快设备的请求队列,然后快设备取出每个请求并实现访问硬件
+若是读取数据请求,则把读出数据层传递回用户进程.
+
+
+见block_device例子,还有block_device3参考例子
+最后关于 自旋锁 和 timers 计时器在快设备的作用,还没有探究!!! 未完待续
+
+编译内核模块,要知本机的内核源码 已编译好的存放位置: 这机子是 /lib/modules/4.2.0-42-generic/build
+
+
+/*************************** linux内核链表 **************************/
+内核使用的链表系统 是一套 指针域的链表系统,
+
+传统链表,一个链成员由两部分组成: 内容域和指针域,指针域的指针指向下一个或上一个链成员始地址(内容域是地址),
+访问一个链成员内容域,直接通过链指针指向得到
+	--------- <-|	  |-->	--------- <-|	  |-->	---------
+内容域:	|	|   |  	  |	|	|   |  	  |	|	|
+	|	|   |	  |	|	|   |  	  |	|	|
+	|	|   |	  |  	|	|   |  	  |	|	|
+	|	|   |	  |	|	|   |  	  |	|	|
+	---------   |	  |	---------   |	  |	---------
+指针域	|	|---------|	|	|---------|	|	|
+	|	|   |-----------|	|   |-----------|	|
+	---------		---------		---------
+
+linux链表,链成员也由内容域和指针域组成,但是,指针域的指针指向下一个或上一个 链成员的指针域 的始地址
+访问一个链成员内容域,通过内核函数的得到 包含当前指针域的链成员的始地址,再人访问内容域
+	---------		---------		---------
+内容域:	|	|		|	|		|	|
+	|	|		|	|		|	|
+	|	|		|	|		|	|
+	|	|		|	|		|	|
+	--------- <-|	    |->	--------- <-|	    |->	---------
+指针域	|	|-----------|	|	|-----------|	|	|
+	|	|   |-----------|	|   |-----------|	|
+	---------		---------		---------
+
+例子见 linux_list (未编译测试过,有时间补过)
+
+
+
+/*************************** linux中断 按键程序 **************************/
+
+混杂设备,字符设备的分支 主设备号一定为10! 所有混杂设备形成一个链表,访问设备时,linux根据次设备号查找相关并执行.
+
+例子见button_interrrupt_waitqueue: button.c
+
+
+linux中断:
+linux中断的一般流程,中断发生 -> 统一入口 irg_SVC -> 得到中断号 ->通过中断号寻找 对应 irq_desc结构数据 -> 然后找到action里的中断处理函数
+共享中断的概念:多个硬件使用同一个中断号,多个中断处理函数挂到同一个irq_desc里,某个硬件触发中断时,这里的所有中断函数都要执行,
+	      所以使用共享中断的硬件的中断函数一定要做自我检测,当中断处理函数执行时,先检测是否自己的硬件引发中断,不是就马上结束,
+	      让下一个中断函数执行....
+	      使用 共享中断的硬件 通过 dev_id 注册注销自己的中断处理函数
+设备驱动需要做的事:写出中断处理函数 -> 注册到linux系统里,注册到指定的 irg_desc结构里.
+中断处理函数,不能引起阻塞,不能引起调度.因为中断程序进程认为在另一个维度(中断上下文)运行的,与普通进程不一样,如果阻塞,
+则系统不会自动跳出中断上下文回到普通的进程环境执行.于是系统死机.
+
+linux 有快速中断和慢速中断快速中断指,中断进行时,下一个中断发生时会被忽略,
+慢速中断中,相同类型中断发生时,迟到的会被忽略掉,不同类型时,会打断相继发生
+
+
+两类中断机制!!!
+两者只能选其一,6410只可以使用其中一类中断,但是要配置cp15处理器来选择其中一类,而210的一部分中断使用第一类,另一部分使用另一类,所以不需配置
+第一类是,中断向量类,
+就是,所有中断都先通过统一的入口,中断向量表的irq这个入口开始,然后查找相关的中断函数执行
+第二类是,vic模块类,
+就是,中段vic硬件模块实现,就是对应中断发生,vic硬件检测到,然后直接从vic对应的address寄存器取出中断处理函数的地址并前往执行,
+相对第一类,执行速度更快.
+先裸机参考no_os里的代码
+
+
+/*************************** 工作队列 **************************/
+
+工作队列描述结构:
+struct workqueue_struct {	//工作队列描述结构
+	...
+struct work_struct (		//工作描述结构
+	...
+	work_func_t func;	//工作要执行的函数
+
+使用:
+创建工作队列: create_workqueue
+创建工作: INIT_WORK
+提交工作: queue_work
+
+见workqueue例子
+
+
+/*************************** 内核定时器 **************************/
+
+定时器事件:当时钟到达未来某个时间点时,触发并执行一项任务
+这个未来的时间点有点特别!!
+自内核运行起来后,计算机运行在主频上,例如 2.5GHZ, 而 1秒/2.5GHZ = 一个时钟周期经历的时间,就是1hz经历的时间
+而 0.01GHZ 经历的时间,我们称为 一个单位时间
+内核运行起来后,内核统计着计算机到目前为止所有经历的单位时间总数,通过jiffies宏显示.
+而这里未来的时间点表示:到达未来的某个 单位时间后,并执行一项任务,
+未来的某个单位时间 - 目前为止所有经历的单位时间总数 = 一段定时器事件触发前等待的时间
+
+另外宏 HZ 也是以 单位时间 为单位 2.5GHZ主频 对应宏HZ为250
+
+(include/linux/timer.h)
+struct timer_list {						//定时器事件描述结构
+	...
+	unsigned long		expires;			//定时器未来时间点,单位见上
+								//
+	void			(*function)(unsigned long);	//执行函数
+
+
+初始化一个定时器事件.
+(include/linux/timer.h)
+#define init_timer(timer)						\
+
+add_timer 注册定时器事件到linux内核
+(kernel/time/timer.c)
+void add_timer(struct timer_list *timer)
+
+
+mod_timer 设置事件未来时间点并执行一次定时器顺数事件 
+再次 mod_timer 再次设置事件未来时间点并执行新一次定时器顺数事件
+(include/linux/timer.h)
+extern int mod_timer(struct timer_list *timer, unsigned long expires);
+
+(include/linux/raid/pq.h)
+# define jiffies	raid6_jiffies()
+
+
+/*************************** 等待队列 **************************/
+
+(include/linux/wait.h)
+struct __wait_queue_head {
+	spinlock_t		lock;
+	struct list_head	task_list;
+};
+typedef struct __wait_queue_head wait_queue_head_t;	//等待队列描述结构
+
+
+#define init_waitqueue_head(q)				\	//初始化等待队列
+
+#define DECLARE_WAIT_QUEUE_HEAD(name) \			//定义 并 初始化等待队列
+
+#define wait_event(wq, condition)			//进入等待队列,condition是bool变量,为假时,当前进程进入等待队列
+							//并进入TASK_UNINTERRUPTIBLE状态休眠,只可以被 wake_up() 唤醒
+							//wq 为 wait_queue_head_t q
+
+#define wait_event_interruptible(wq, condition)		//进入等待队列,condition是bool变量,为假时,当前进程进入等待队列
+							//并进入TASK_INTERRUPTIBLE状态休眠,可以被 信号 和 wake_up()唤醒
+							//wq 为 wait_queue_head_t q
+
+#define wait_event_killable(wq, condition)		//进入等待队列,condition是bool变量,为假时,当前进程进入等待队列
+							//并进入TASK_KILLABLE状态休眠,可以被 wake_up() 唤醒
+							//与TASK_UNINTERRUPTIBLE 唯一不同,可以接受致命kill(ctrl+c)信号,唤醒进程
+							//wq 为 wait_queue_head_t q
+
+#define wake_up(x)	__wake_up(x, TASK_NORMAL, 1, NULL)	//可以唤醒TASK_UNINTERRUPTIBLE,TASK_INTERRUPTIBLE,TASK_KILLABLE等所有进程
+								//x为 wait_queue_head_t *q
+
+
+
+#define wake_up_interruptible(x)	__wake_up(x, TASK_INTERRUPTIBLE, 1, NULL)	//只可以唤醒TASK_INTERRUPTIBLE,的进程
+											//x为 wait_queue_head_t *q
+(关于内核模块,多进程,和共享数据的 疑惑)
+
+例子见:button_interrrupt_waitqueue: button.c app.c
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,465 @@
+
+/////////////////////////////////////////////
+
+一个典型 ucos II 工程模板:
+
+void TASk1 (void *pdata)		//任务代码
+{
+	...
+	while(1)
+	{
+		...
+		OS_ENTER_CRITICAL();	//关中断
+		...			//不可被中断打断的代码
+		OS_EXIT_CRITACAL();	//开中断	
+	
+	}
+	....
+}
+
+void main (void)
+{
+	...		//硬件初始化
+	OSInit();	//初始化 ucos II
+	...
+	OSTaskCreate(TASK1,...)		//创建一个运行 TASK1 代码的 任务
+	OSTaskCreate(TASK1,...)		//创建第二个运行 TASK1 代码的 任务
+	...
+	OSStart();	//任务启动,并开始多任务调度机制
+}
+
+
+
+
+//////////////////////////////////////////////////////
+
+ucos II 本身预定义了的 的系统任务代码
+
+void  OS_TaskIdle (void *p_arg)			// 空闲任务:做统计工作,最低任务级别 系统自动创建
+{
+#if OS_CRITICAL_METHOD == 3u                     /* Allocate storage for CPU status register           */
+    OS_CPU_SR  cpu_sr = 0u;
+#endif
+    p_arg = p_arg;                               /* Prevent compiler warning for not using 'p_arg' -- 防止编译器报错   */
+    for (;;) {
+        OS_ENTER_CRITICAL();			//关中断
+        OSIdleCtr++;				//计数任务
+        OS_EXIT_CRITICAL();			//开中断
+        OSTaskIdleHook();                        /* Call user definable HOOK                           */
+    }
+}
+
+void  OS_TaskStat (void *p_arg)			//统计cpu处理用户任务的使用率
+						//每秒执行一次,统计cpu1秒内被用户任务使用的时间,来生成cpu利用率,存于OSCPUUsage供访问
+						//通过OS_CFG.h 的 OS_TASK_STAT_EN 置 1 添加此系统任务
+						//创建这个系统任务前 先调用 OSStatInit() 初始化
+
+///////////////////////////////////////////////
+
+任务管理相关函数;
+
+OSTaskCreate() 		创建任务	OS_TASK_CREATE_EN 置 1
+OSTaskStkChk()		堆栈检查	OS_TASK_CREATE_EXT_EN 置 1
+OSTaskDel() 		删除任务	OS_TASK_DEL_EN 置 1		//一般在任务里调用执行,而不是非任务函数里
+OSTaskDelReq() 		请求删除任务	OS_TASK_DEL_EN 置 1		//在删除任务之前先请求删除,面向一些不好删除的任务
+OSTaskSuspend() 	挂起任务	OS_TASK_SUSPEND_EN 置 1		//让任务休眠
+OSTaskResume()		恢复任务	OS_TASK_SUSPEND_EN 置 1		//让任务回到就绪态,等待调度执行
+OSTaskChangePrio()	改任务优先级	OS_TASK_CHANGE_PRIO_EN 置 1	
+OSTaskQuery()		查任务当前状态	OS_TASK_QUERY_EN 置 1	
+
+
+任务优先级别号,也相当于任务唯一的身份证号:例如 任务1优先级别号是7 就不可以有另外的任务优先级也是 7
+
+每个实质任务 对应 一个任务控制块数据  struct OS_tcb  每过控制块数据又是一个链表成员
+struct OS_tcb
+{
+	前一个任务指针
+	后一个任务指针
+	任务代码指针
+	任务堆/栈指针
+	任务优先级	//也相当于任务的身份证号码,可以更改
+	任务当前状态
+	.....
+}
+任务控制块链表,是一个OS初始化就已经建立好的空链表,
+创建任务相当于填充空链表里的空成员,填充空的任务控制块,
+调度时,被踢出的任务对应的环境将全部压入对应的堆栈,以便下次执行该任务时,可以接着执行
+
+
+///////////////////////////////////////////////
+调度
+
+调用以下函数,均属于主动执行调度算法
+OSStartHighRdy()	切换到优先级高的任务
+OS_Sched()		执行调度
+OSIntExit()		中断结束后,不返回原来任务继续执行,而是执行调度
+
+OSSchedLock()		禁止系统进行调度工作
+
+///////////////////////////////////////////////
+时钟
+时钟街拍 timetick 来自硬件定时器的周期中断,节拍大小为 两次定时中断的时间间隔
+用OSTime来记录开机以来共经历的 节拍数目
+时钟节拍作为单位,提供计算 任务执行时间 的尺度
+
+时钟节拍器的开启要在 OSStart() 之后,即在一个用户任务里开启
+OS_CPU_SysTickInit()	//初始化并开始时钟
+
+OSTickISR()	//系统设置 时钟节拍定时器中断处理程序 		// ucos3 变为OS_CPU_SysTickHandler()
+		//而真正对于当前节拍中断处理的函数是 OSTickISR() 里调用的 OSTimeTick()
+
+OSTimeTick()	//给 OStime 加一
+		//给 等待队列里的任务 的 OSTCBDly 都 减一, 当 OSTCBDly 到0时,任务进入就绪态队列 参加调度
+
+关于时间的可操作函数
+OSTimeDly() 		节拍延时		//让任务进入等待队列, 等待时间为 自定义个时间节拍,然后才回到就绪列表参加调度
+OSTimeDlyHMSM()		时间延时	OS_TIME_DLY_HMSM_EN 置 1	//让任务要等待 X小时X分X秒 这段时间后,才回到就绪列表参加调度
+OSTimeDlyResume()	唤醒延时	OS_TIME_DLY_RESUME_EN 置 1	//任务在等待队列 但是直接唤醒,回到就绪列表参加调度
+OSTimeGet()		获取当前系统时间	OS_TIME_GET_SET_EN 置 1		
+OSTimeSet()		设置当前系统时间	OS_TIME_GET_SET_EN 置 1
+
+
+///////////////////////////////////////////////
+任务间交互
+
+临界资源 (互斥)
+某段代码 或则 变量 在同一时间 不能被多于一个的任务,或函数访问
+相关办法:关中断,禁止调度,互斥锁
+
+同步:
+某些 任务 或 代码 要按一定先后顺序执行
+相关方法: 全职变量作为同步检测, 信号量机制
+
+
+事件控制块  
+用于统一 信号量,互斥锁, 邮箱, 消息队列,,,, 等各种交互机制的使用,
+struct os_event {
+	OSEventType	//事件类型
+	OSEventCnt	//计数器
+	OSEventPtr
+	OSEventGrp
+	OSEventTbl[]
+}
+
+
+///////////////////////////////////////////////
+
+信号量机制:
+	OSEventType = OS_EVENT_TYPE_SEM
+	OSEventCnt	// 通过 OSSemCreate( OSEventCnt ) 初始化计数器
+	OSEventTbl[]	//充当任务等待表, 记录那些任务等待 当前事件
+
+OSSemCreate()	//其实就是创建一个 信号量事件 并,初始化计数器
+OSSemPend()	//获取 信号量 	获取不到就挂起任务休眠,直到等到为止
+OSSemPost()	//释放 信号量
+OSSemDel()	OS_SEM_DEL_EN 置 1	//删除 信号量 
+OSSemAccept()	OS_SEM_ACCEPT_EN 置 1	//接收 信号量	也是用于获取信号量 但获取不到信号量,也不会挂起
+OSSemQuery()	OS_SEM_QUERY_EN 置 1	//查询 信号量	  
+
+对于中断程序来说, 只能调用 OSSemPost(), OSSemQuery(), OSSemAccept()
+特别不能调用OSSemPend() 因为得不到就会阻塞中断程序导致死机!!
+
+///////////////////////////////////////////////
+
+互斥锁机制:
+其实就是 OSEventCnt 只能是 0或1 的双值信号量
+
+	OSEventType = OS_EVENT_TYPE_MUTEX
+	OSEventCnt	// 不使用
+	OSEventPtr	//指向 一个 struct os_mutex_data 变量	???
+	OSEventTbl[]	//充当任务等待表, 记录那些任务等待 当前事件
+
+OSMutexCreate()	//其实就是创建一个 互斥锁事件 
+OSMutexPend()	//获取 互斥锁 	获取不到就挂起任务休眠,直到等到为止
+OSMutexPost()	//释放 互斥锁
+OSMutexDel()	OS_MUTEX_DEL_EN 置 1	//删除 互斥锁 
+OSMutexAccept()	OS_MUTEX_ACCEPT_EN 置 1	//接收 互斥锁	也是用于获取互斥锁 但获取不到互斥锁,也不会挂起
+OSMutexQuery()	OS_MUTEX_QUERY_EN 置 1	//查询 互斥锁	   
+
+对于中断程序来说, 只能调用 OSMutexPost(), OSMutexQuery(), OSMutexAccept()
+特别不能调用OSMutexPend() 因为得不到就会阻塞中断程序导致死机!!
+
+///////////////////////////////////////////////
+
+事件集机制:
+其实就是设置一个32位变量,每一位代表一个flag,用法例如:
+任务a 需要 满足事件集AA = 0b1111 才进一步工作
+任务b 提供 事件集AA 0b11
+任务c 提供 事件集AA 0b1100
+于是任务a满足
+	OSEventType = OS_EVENT_TYPE_FLAG
+	OSEventCnt	// 不使用
+	OSEventPtr	//指向 ??
+	OSEventTbl[]	//??
+
+OSFlagCreate()	//其实就是创建一个 信号量集事件 
+OSFlagPend()	//获取 事件集 	获取不到就挂起任务休眠,直到等到为止
+OSFlagPost()	//释放 事件集
+OSFlagDel()	OS_FLAG_DEL_EN 置 1	//删除 事件集 
+OSFlagAccept()	OS_FLAG_ACCEPT_EN 置 1	//接收 事件集	也是用于获取事件集 但获取不到信事件集,也不会挂起
+OSFlagQuery()	OS_FLAG_QUERY_EN 置 1	//查询 事件集	   
+
+
+///////////////////////////////////////////////
+任务间通讯
+
+消息邮箱: 单一消息
+消息队列: 大量消息
+
+
+///////////////////////////////////////////////
+
+消息邮箱机制:
+
+	OSEventType = OS_EVENT_TYPE_MBOX
+	OSEventCnt	// 不使用
+	OSEventPtr	//指向 一个 消息内容的地址,消息内容可以各种各样,变量,结构体数据,数组,字符串等等...
+	OSEventTbl[]	//不使用
+
+OSFlagCreate()	//其实就是创建一个 消息邮箱 
+OSFlagPend()	//等待 消息邮箱 的内容
+OSFlagPost()	//发送 消息到消息邮箱
+OSFlagDel()	OS_FLAG_DEL_EN 置 1	//删除 信号量集 
+OSFlagAccept()	OS_FLAG_ACCEPT_EN 置 1	//接收 信号量集	也是用于获取信号量集 但获取不到信号量集,也不会挂起
+OSFlagQuery()	OS_FLAG_QUERY_EN 置 1	//查询 信号量集
+
+
+///////////////////////////////////////////////
+
+消息队列机制:
+
+	OSEventType = OS_EVENT_TYPE_Q
+	OSEventCnt	// 不使用
+	OSEventPtr	//指向 一个 消息队列控制块,消息队列控制块含有多个消息内容指针,每个指针指向具体的消息内容
+	OSEventTbl[]	//不使用
+
+OSQCreate()	//其实就是创建一个 消息队列 
+OSQPend()	//等待获取 消息队列 的内容
+OSQPost()	OS_Q_POST_EN 置 1	//给消息队列 加入一条消息
+OSQPostFront()	OS_Q_POST_FRONT_EN 置 1	//给消息队列 加入一条消息
+OSQPostOpt()	OS_Q_POST_OPT_EN 置 1	//给消息队列 加入一条消息
+OSQFlush()	OS_Q_FLUSH_EN 置 1	//清空消息列表
+OSQDel()	OS_Q_DEL_EN 置 1	//删除 信号列表 
+OSQAccept()	OS_Q_ACCEPT_EN 置 1	//获取 消息队列 的内容 但获取不到,也不会挂起
+OSQQuery()	OS_Q_QUERY_EN 置 1	//查询 消息队列中的消息
+
+此外消息队列一般 配搭 消息池使用, 消息池就是规范的存放消息内容的地方
+
+
+///////////////////////////////////////////////
+
+任务信号量:
+
+与上述的信箱号量有区别, 上述信号量是一个全局的信号量,任何任务都可以发送和等待接受
+
+但这里的任务信号量,可以由任何任务发送信号量 但是 只有特定的那个任务才可以等待接收
+
+任务消息队列:
+
+同理,这里的任务消息队列,可以由任何任务发送信号量 但是 只有特定的那个任务才可以接收消息队列
+
+
+///////////////////////////////////////////////
+
+内存管理:
+
+系统运行起来后,那些全局变量 代码域 任务块链表等等 都静态地分布在内存里,直到断电关闭才释放,
+相比较,剩下的内存空间就是 动态内存分配空间,随着任务的流程,被分配和释放,
+ucos处理 动态内存分配空间时, 一般是取出一个比较大的内存空间规划成一个内存分区,(与我们说的磁盘分区和flash分区的内容和意义不一样)
+内存分区里又分成很多内存小块,
+任务程序获取和释放这些 内存小快 来暂存一些过程中的暂时内容
+如果不使用这些内存快,就会相应加大任务栈区的负荷
+
+
+OSMemCreate()		//创建内存分区
+OSMemGet()		//内存块申请/分配函数
+OSMemPut()		//内存块释放
+OSMemQuery()		//内存分区状态查询
+OSMemNameGet()		//内存分区名称获取
+OSMemNameSet()		//内存分区名称设置
+
+
+///////////////////////////////////////////////
+移植中断:
+
+启动初始化流程:
+
+Libraries/CMSIS/Device/ST/STM32F4xx/Source/Templates/arm/startup_stm32f429_439xx.s: 
+reset_handler -> __main(copydata,copybss,) -> main
+
+user/App/app.c
+main -> AppTaskStart -> BSP_Init ( EXTI_Pxy_Config / USARTx_config ) -> CPU_init(OS关于OS时钟预初始化)
+-> OS_CPU_SysTickInit -> Mem_Init -> OSMemCreate -> 创建 执行任务
+
+中断初始化,以按键初始化来剖析
+EXTI_Pxy_Config -> gpio初始化 -> EXTI中断源与指定gpio针连接 -> 选择EXTI中断源其中一条支路(共5条支路)
+-> 配置NVIC模块,开启中断和中断嵌套 (置使中断发生时可以嵌套新来的同样的中断而不是忽略掉)
+发现初始化全程都是硬件的初始化,并没有与 ucos打交道,并没有要给ucos什么内容配置的事!!!!
+就是说整个过程都是系统无关的初始化.
+
+
+深入学习ucos架构!!!
+
+(这个部分谈及的一直是硬件中断)
+由于整个硬件中断初始化过程都是系统无关的初始化.
+ucos 并没有关于硬件中断的规范,
+就是锁,硬件中断初始化时,并没有,也不需要相关 (例如要把中断处理函数注册到ucos里) 硬件中断关联到ucos的操作!!
+相当于,硬件中断程序 与 ucos系统主程序 是在相互独立的时空里发生的!!! ,所以初始化中断时,并不需要涉及到ucos
+所以说,硬件中断处理程序 不是 ucos系统程序的用户任务, 所以也不能用描述任务的运行级别制度 来描述 硬件中断处理程序 
+
+
+	/硬件中断处理程序
+stm32 
+	\ucos系统程序,(包括调度,任务1,任务2,ucos定时器软件中断,,系统任务,,,,等等)
+
+可以说任务是 ucos系统程序 的一个运行部分 ,而不是一个独立的进程程序什么的
+也就是说,ucos系统运行时,中途发生硬件中断函数时,ucos系统是察觉不到的,ucos系统始终认为自己是在无间断一直在运行
+然而硬件中断函数被要求要改变一些全局变量,来告诉ucos系统程序,在他无法察觉的时空里确实是发生了一些事情
+
+
+虽然硬件中断程序与ucos系统程序是 互不相关地运行,
+但是属于 ucos系统架构 的大部分应用函数本身是硬件无关的全局函数,硬件中断程序是允许调用
+而且必须调用, 因为ucos通过被更改的全局变量来察觉是否有中断发生过!!!
+
+一般:硬件中断程序运行时,先
+	OSIntEnter()	//给统计中断发生次数的统计变量加1
+在硬件中断程序结束前,运行
+	OSIntExit()	//更改 ucos系统程序的系统栈区(不是任务的栈区),
+			//这样中断处理程序结束后,返回到 ucos系统程序 后, 执行调度,而不是继续上次的执行任务
+
+不管是 ucos系统程序的用户任务,还是硬件中断程序 
+如果希望 运行一段 临界段的代码 都可以使用以下规范:
+	CPU_SR_ALLOC()	//分配一个空间存储 cpu状态寄存器的当前状态 每个任务/硬件中断程序 都一定要先执行这函数!!
+	OS_CRITICAL_ENTER()	//存储cpu状态寄存器的当前状态后 关闭总中断,就是允许硬件中断,软件中断,所以也不能执行调度
+	临界代码段...
+	OS_CRITICAL_ENTER()
+
+附加:OS_CRITICAL_ENTER 执行流程:
+OS_CRITICAL_ENTER -> CPU_CRITICAL_ENTER -> (CPU_INT_DIS / CPU_IntDisaMeasStart)
+CPU_INT_DIS -> CPU_SR_Save(cpu_a.asm) -> 存储cpu状态寄存器的当前状态 到 cpu_sr
+CPU_IntDisaMeasStart -> CPU_TS_TmrRd
+
+最后, 讨论 ucos上面提到的时钟中断 和 硬件中断的区别!!
+contex-M3 中断向量表有16个项,
+而第15项是时钟节拍中断入口,第0项是reset入口,第3项是硬件中断
+所以,对于 ucos 来说,时钟中断也是硬件中断,但是特别的是,时钟中断的入口不是统一的第3入口,而是另外的第15入口
+OS_CPU_SysTickInit()	//初始化并开始时钟,他控制硬件时钟节拍中断的触发的单位时间,但是 这个硬件中断与ucos系统程序 依然 是相互独立的关系
+			//usos的时钟关乎 ucos系统程序 的时间片调度,以及 定时器软件中断的功能
+			//但是,不能在 OSStart() 之前执行,一般在第一个任务里执行,
+			//也一定要执行,不执行,预示着,没有时间片调度功能,可能意味着,可能会一直执行着第一个任务不改变
+OS_CPU_SysTickHandler()	//ucos 要求时钟节拍中断必须执行的已经写好的中断处理函数,所以不是自定义的,
+			//要把这个函数的指针放到 contex-M3 中断向量表第15个入口
+			//归根到底也是一个 ucos系统程序 不能主动察觉的 硬件中断 所以需要加入 OSIntEnter()  OSIntExit()
+
+
+设置好的中断源,通过配置 NVIC来配置并开启中断源
+stm32 中断模块 NVIC 分级制度:
+第一级: 5个分组
+第二级:	每个分组 都有 抢占级和子优先级
+
+NVIC_PriorityGroup_0:	没有抢占级,		0~15共16个子优先级	//每个中断源有在 NVIC 里有一个级别寄存器,其中[7:4]记录中断级别
+NVIC_PriorityGroup_1:	0~1共2个抢占级,		0~7共8个子优先级
+NVIC_PriorityGroup_2:	0~3共4个抢占级,		0~3共4个子优先级
+NVIC_PriorityGroup_3:	0~7共8个抢占级,		0~1共2个子优先级
+NVIC_PriorityGroup_4:	0~15共15个抢占级,	没有子优先级
+
+分组低的中断正在执行,分组高的中断 可以抢占 分组低的中断
+低抢占级的中断正在执行,同分组中断,高抢占级 可以抢占 低抢占级的中断
+低子优先级的中断正在执行,同分组同抢占级中断,高子优先级 不会抢占 低抢占级的中断
+中断A执行时,先清flag,但接着又触发同一中断A,执行中的中断A先执行完,会再执行一次
+中断A执行时,还未清flag,但接着又触发同一中断A,新触发的中断A被忽略
+
+
+///////////////////////////////////////////////
+FreeRTOS 比较 ucos :
+
+与 ucos 差不多:
+进入 临界区 通过修改 basepri 寄存器,来开关全局中断,与ucos修改PRIMASK寄存器控制全局中断一样
+与ucos不一样的是 ucos 进入临界段的 全局中断开关函数是统一的,
+但是 FreeRTOS 进入临界段 是区别的, 任务进入临界区 的全局开关函数还有统计这一项,而中断里进入临界区的全局开关函数没有统计功能
+
+
+///////////////////////////////////////////////
+RTX 比较 ucos :
+
+基本功能与所有嵌入式OS一样,
+3个OS 统一说明内核调度需要 硬件时钟中断 SysTick, 任务锁禁止调度,所以就是关闭时钟中断
+
+RTX比较特别地 引入了 用户模式 和 特权模式, RTX是keil自带的
+用户模式: (Run in privileged mode 不打钩 表示用户模式)
+表示,任务不能做出访问硬件寄存器的操作,当访问寄存器时会,出现 hard fault 中断(中断向量表里的一项)
+特权模式:
+任务可以访问硬件寄存器
+一般来说,特权模式是测试工程阶段使用,用户模式是成熟产品阶段使用
+
+上述的模式主要是针对任务时,但在启动任务前的初始化都可以访问寄存器,
+而且在启动执行任务之前的初始化还是可以访问硬件寄存器的!!!
+
+一旦启动了任务,就不能访问硬件处理器,只能在硬件中断里处理硬件寄存器
+但是还有一个主动的方式来访问硬件寄存器,就是通过唤起 SVC 中断,在中断函数里处理
+
+SVC 是中断向量表中的一项,可以通过用户执行svc指令唤醒,也可以修改 NVIC->STIR 来唤醒,
+但是在用户模式,任务只能通过使用svc指令来唤醒
+
+ 
+///////////////////////////////////////////////
+ucos III MPU FPU SVC PendSV
+MPU: 是内存管理器
+FPU: 是浮点运算模块
+SVC: 软件中断
+PendSV: 主要用于优化上下文切换,
+
+
+/////////////////////////////////////////////
+stm32 mmap
+
+flash地址:
+0x08000000	放栈顶地址
+0x08000004	中断向量表 resethandler 指针
+...
+0x08000004 + n	resethandleer 内容始地址
+....
+0x08000004 + N	main 内容始地址
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
