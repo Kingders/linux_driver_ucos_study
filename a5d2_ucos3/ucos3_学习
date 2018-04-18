@@ -1,0 +1,639 @@
+20180330
+ucos移植lwip !!!
+先移植eth
+project->option添加宏!!
+CONFIG_ARCH_ARM
+CONFIG_ARCH_ARMV7A
+CONFIG_HAVE_ETH			//不添加会说有的class没有定义
+CONFIG_HAVE_GMAC		
+CONFIG_HAVE_GMAC_QUEUES
+CONFIG_HAVE_AIC5
+CONFIG_HAVE_PMIC_ACT8945A
+CONFIG_HAVE_TWI_AT24
+CONFIG_DRV_AT24
+CONFIG_HAVE_I2C_BUS
+CONFIG_HAVE_XDMAC
+CONFIG_HAVE_XDMAC_DATA_WIDTH_DWORD
+CONFIG_HAVE_BUS_I2C
+
+继续移植发现 board_cfg_eth 崩溃, 
+原来需要先初始化irq,最好更换aic5驱动
+尝试换成V2.12的aic5驱动:(成功在ucos3执行)
+	board_lowlevel.c
+		include "irq/irq.h"
+		屏蔽本来的include aic!!
+		low_level_init里 irq_initialize换掉 aic_initialize
+	twid.c
+		include "irq/irq.h"
+		屏蔽本来的include aic!!
+		//by william
+	        //uint32_t id = aic_get_current_interrupt_identifier();
+	        uint32_t id = aic_get_current_interrupt_source();
+mac地址为0!!
+没有初始化phy 怀疑!
+board_cfg_pmic是电源管理芯片初始化,与 board_cfg_net,甚至phy无关
+但一般 board_cfg_pmic在 board_cfg_net之前比较好
+的确实是phy没有设置好!!
+补充 (pmc.c) 即添加 pmc+.c
+发现在之前,更需要设置 初始化 at24,
+在board_eth.h添加
+	//by william
+	/* =================== AT24 device definition =================== */
+	
+	#define BOARD_AT24_TWI_BUS BUS(BUS_TYPE_I2C, 1)
+	#define BOARD_AT24_ADDR    0x54
+	#define BOARD_AT24_MODEL   AT24MAC402
+在board_twi.h添加
+	//by william
+	/* ================== TWI bus definition ====================== */
+	
+	#define BOARD_TWI_BUS0      FLEXTWI4
+	#define BOARD_TWI_BUS0_FREQ 400000
+	#define BOARD_TWI_BUS0_PINS PINS_FLEXCOM4_TWI_IOS3
+	#define BOARD_TWI_BUS0_MODE BUS_TRANSFER_MODE_DMA
+	
+	#define BOARD_TWI_BUS1      TWI1
+	#define BOARD_TWI_BUS1_FREQ 400000
+	#define BOARD_TWI_BUS1_PINS PINS_TWI1_IOS2
+	#define BOARD_TWI_BUS1_MODE BUS_TRANSFER_MODE_DMA
+
+	/* =================== AT24 device definition =================== */
+	
+	#define BOARD_AT24_TWI_BUS BUS(BUS_TYPE_I2C, 1)
+	#define BOARD_AT24_ADDR    0x54
+	#define BOARD_AT24_MODEL   AT24MAC402
+还要改 io.h的 struct _buffer
+还要改 component_xdmac.h的XDMAC_CH
+发现又要换掉timer函数!!
+换掉timer.c!! (与ucos不冲突)
+补充 (tc.c) 即添加 tc+.c
+又要添加bus.c!!
+替换mutex.c
+替换twid.c,twi.c
+添加dma.c
+替换 act8945a.c
+终于编译成功,显然这种新旧库共用的方法必然导致冲突使ucos失败!
+换回 act8945a.c
+换回 twid.c,twi.c
+换回 mutex.c
+换回 timer.c (timer冲突了)
+(算了,两个不同版本的底层库实在是太多冲突了!!!)
+(在v2.12的库上移植ucos3!!)
+
+
+
+
+
+
+
+
+20180330
+基于a5d2新版底层库v2.12移植ucos 放在 ucos+文件夹里!!
+好意外!!!只是底层库换了, 就直接成功
+换库,ucos应该有很多奇奇怪怪的需要重新配置,重新写的,
+但是没有,没有修改任何跟ucos接口有关的内容,直接成功.
+好惊喜!!
+本来还想好好学习如何配置底层移植ucos的,
+继续做eth!!
+注意,初始化eth时,执行到 assert出错
+assert(XX) 函数作用 当XX已经被建立时,返回true,当XX未建立,出错!!并崩溃程序
+发现,时间片调度的基准时钟没有设置好!!
+datasheet:Peripheral Identifiers 记录中断号
+暂时: AIC PIT PMC 关于时钟tick中断的设置都没发现什么问题
+检查过,代表 systickHandler 的BSP_OSTickISRHAndler()正常工作 
+BSP_OSTickISRHAndler() 只执行了 OSTimeTIck!!,OSTimeTick也运行良好!!!
+然而好像最终并没有更新 OSTick!!
+确认没有调用OS_TickTask 更ixn新时间片计数!!
+OSTimeGet()是获取当前时钟节拍OSTick的, 就是获取 OSTickCtr这个值 而这个值是通过 OS_TickTask赋予的
+现在是 OSTimeGet() 得到的都是0,表示没有更新时间片??
+最后发现是 OS_TickTask 任务级别太低 10级!!,所以一直没被调用
+现在 OS_TickTask 是有了 ,但是没有看到 倒数时间片的控制!
+后民发现 TCB.TickRemain 都为0, 即时间片没有被赋值!!
+首先 OS_TickTask 被 OSTask_Create 时间片设置为0
+但是其他任务,我们OSTask_Create 时,是有时间片设置的!!
+查看OSTask_Create发现,设置描述时间片的擦参数不是TCB.TickRemain,而是TCB.TimequantaCtr
+然后的发现 要在 OSinit() 之后 打开时间片调度,
+#if OS_CFG_SCHED_ROUND_ROBIN_EN  
+OSSchedRoundRobinCfg(DEF_ENABLED,1,&err);  
+#endif
+还有就是 OS_TickTask 的优先级!!网上说最高,到例程却设置成最低!
+发现在 OS_TickTask 的优先级优先级1 时
+一旦切换成 ethtask ,时钟中断就再没有响应过.
+最后发现是 OSIntCtxSw() 出问题!!
+
+初步认识, OSIntCtxSw()这个是交叉环境下的 调度实现函数.ISR环境下调度 user环境的task
+暂时只有 OSIntExit 执行这个函数!!
+对应的 OSCtxSw(),即 OS_TASK_SW() 是 同环境下的 调度实现函数 都是 汇编asm 实现的
+而唯一只有 OSSched 调用, 这个函数,所以 OSSched 是同环境下的调度实现函数
+例如比较惊讶的是 ISR环境下 OS_TaskSemPost ->OSSched 调度执行 OS_TickTask,
+Task一般在 user环境下运行的 但是这里却是isR里调用,表示在ISR环境中使用了 OSCtxSw() 调度
+
+另一种说法,所有中断函数搜是在中断处理任务上运行的,
+从中断任务中调度出来,通过OSIntCtxSw()
+而一般任务间执行调度,执行 OSCtxSw()
+
+调回优先级为1时,及TimeTick会调用OS_TickTask()时,注意这时不要在systickHandle 加入 IntEnter()TntExit()
+	注意,systickHandle 是在优先级为0的中断task上运行
+	中断task: TimeTick()->sempost->OSSched-->OS_TickTask() //这里使用OSSched切换到OS_TickTask()
+	但是OS_TickTask()完了还是要回到 中断task 上来的!! 因为中断task未完成
+	现在是  OS_TickTask() 跳到了 ethTask, 追溯了 OS_TickTask()发现各地方工作良好
+	整个 OS_TickTask() 只有	OSSched 是跳转的!!
+	但那次错误跳转是 从OS_TickTask()->OSSched 跳的,
+	理论上 OS_TickTask()是由 中断task ossched到的,由于中断task未挂起,且优先级最高的0
+	所以 OS_TickTask()后仍然跳回中断task
+	而这里却跳到 ethTask
+重新检查 OSTimeDlyHMSM() 延时工作函数,(睡眠到一定时间后醒来)
+	发现需要 OS_TickTask() 更新延时!!,用回OS_TickTask默认优先级10!!
+	而 OSTimeDlyHMSM() 重点,把延时写入 TCB, OS_RdyListRemove(),OSSched(),
+OSSchedRoundRobinYield 也需要先 OSSchedRoundRobinCfg(DEF_ENABLED,1,&err);  打开开关
+	(放弃时间片直接跳出)
+	在两个Task中调用,可以工作!!!!当中调用了 OS_RdyListMoveHeadtoTail()  OSSched()
+从中断Task出来,不应该调用 OSSched() 的!!,
+	因为 OSSched() 是会记录当前stack并当前task换到tasklist里, 
+	下次运行时从这个断开的地方开始
+	而中断task执行后是睡眠的,不用记录当前stack,因为i下次运行并不从当前位置运行
+
+现在是 OSTimeDlyHMSM() 可实现调度,
+OSTaskSupend 可实现调度,
+
+
+1、任务级调度 OSSched()
+2、中断级调度OSIntExit()
+3、运行多个任务具有相同优先级，可以被设置为循环轮转调度
+4、任务发生调度的情况
+     (1)任务调用提交服务函数Post，发送信号量或者消息给其它任务时调度发生，调度在Post函数的结束时发生，注意
+          调度是不会发生(见OS_OPT_POST_NO_SCHED的可选参数)
+     (2)任务调用OSTimeDly()或OSTimeDlyHMSM()，如果延时参数不是0，调度发生，调度会在该任务被放入挂起队列
+          后马上执行
+     (3)任务所等待的事件发生或超时，当Pend()被调用时，接收到该事件的任务或者超时的任务就会被移出等待队列。然
+          后调度器选择就绪列表中优先级最高的任务执行。移出等待队列的任务不一定就绪状态，因为它还可能在停止队列。
+     (4)任务取消挂起，一个任务可以被取消挂起，若另一个任务调用PendAbort()，当任务被移出等待列表中时调度发生。
+     (5)新任务被创建
+     (6)用户调用OSSched
+     (7)调用OSSchedRoundRobinYield任务放弃分配给它的时间片
+     (8)通过调用OSSchedUnlock调度器被解锁
+     (9)退出中断服务程序，OSIntExit
+     (10)OSTaskSupend (挂起一个task)或 OSTaskResume(点亮一个task)，调度发生
+
+
+整理: 
+首先怀疑 BSP_OSTickISRHandler 不是一个硬件级别的终端函数,即没有运行在所谓的cpu 的ISR或者SVC模式上
+而是一个 在中断列表Task上运行的的 队列任务函数, 中断列表Task优先级别为0,最优级别
+最后发现 BSP_OSTickISRHandler 是一个硬件级别的终端函数 运行在cpu 的ISR模式,
+这时发生的任务调度是一个非常巧妙的机制
+现象(和假设):
+	1,BSP_OSTickISRHandler 只用一个 OStimeTick,却没有作为一个中断函数该有的 OSIntEnter()和OSIntExit()
+	2,原来默认 OS_TickTask 默认优先级别是 10 的,比较低,当我调到比较高的优先级1时,出现以下奇怪动作!!!
+	  BSP_OSTickISRHandler->OStimeTick 执行了 OSTaskSemPost()给OS_TickTask 发送信号,
+	  OSTaskSemPost()还顺利执行了 OSSched(),直接跳到的 OS_TickTask 执行!!
+		理论上应在 BSP_OSTickISRHandler 结束后, 才有机会调度到 OS_TickTask(), 而且不是用 OSSched()调度
+		因为 OSSched() 调用 OSCtxSw 会把当前Task内容压入栈,后把下一个Task内容释放!!
+		而在 运行在硬件中断函数时,应该没有没有处于任何的Task里,所以没有当前Task一说
+	  OS_TickTask 执行完执行 OSSched(),这时返回到 BSP_OSTickISRHandler->OStimeTick 继续执行余下中断任务!!
+	3,还发现在 BSP_OSTickISRHandler工作期间时,中断是被锁住的.
+	  就是说,从 OStimeTick 跳到 OS_TickTask 时,中断依然没有解锁,
+	  直到 OS_TickTask 跳回 OStimeTick 执行完余下的任务, 退出 BSP_OSTickISRHandler 后,中断才被解锁!!
+	  即: 中断锁住 -> BSP_OSTickISRHandler -> OS_TickTask -> BSP_OSTickISRHandler -> 中断解锁
+	4,这样就有一个严重错误发发生了!!
+	  我开了时间片模式, 导致一个普通任务A,在某一刻处于很高的执行级别,
+	  还有OS_TickTask()优先级1,
+	  这时有:	
+	  时刻1:中断锁住 -> BSP_OSTickISRHandler -> OS_TickTask -> BSP_OSTickISRHandler -> 中断解锁
+	  时刻2:中断锁住 -> BSP_OSTickISRHandler -> OS_TickTask -> BSP_OSTickISRHandler -> 中断解锁
+	  .....
+	  时刻x:中断锁住 -> BSP_OSTickISRHandler -> OS_TickTask -> 普通任务A(永远执行)
+	  由于中断被锁,所以这时就永远执行普通任务A
+	  除非普通任务A主动放弃:OS_RdyListMoveHeadtoTail()+OSSched() 或者 OS_RdyListRemove(),OSSched()
+	  才有机会回到还没有执行完毕的 BSP_OSTickISRHandler 然后 中断解锁
+	所以,深入 中断是如何实现的!!!
+	由于能够调用 OSSched() 所有中断Task 应该有初始化,有堆栈信息!!
+修正,这个ucos案例里没有所谓的中断任务task!!
+	BSP_OSTickISRHandler 是真实的 中断服务函数, 注意!!但没有运行在cpu的ISR模式上(不知为何)
+	真实情况应该是这样子的!!
+	任务A在正常执行,这时来了时钟中断, cpu 把当前 内容的地址写如lr pc直接跳到 irqhandler
+	这时,其他通用寄存器上的内容暂且保持原样,
+	这是 堆栈指针仍然指向 任务A的堆栈,意味着接下来的中断函数工作会在 任务A的堆栈下工作
+	所以我们可以认为 现在是仍处于 任务A 下 工作, 
+	irqhandler 做了一些处理 跳到了 BSP_OSTickISRHandler,
+	即可认为 BSP_OSTickISRHandler,是当前任务A正在运行的函数.
+	BSP_OSTickISRHandler->OStimeTick 执行了 OSTaskSemPost()给OS_TickTask 发送信号,
+	由于设了 OS_TickTask 优先级1,所以 OSTaskSemPost()还顺利执行了 OSSched(),直接跳到的 OS_TickTask 执行!!
+	OSSched(),
+		会把 任务A 的TCB保存, 然后把 任务 OS_TickTask的TCB放入ucos3环境,
+		然后把当前 ISR:R0-R14 压入 任务A 的堆栈, 把 任务 OS_TickTask 堆栈内容放入 ISR:R0-R14
+		这样就实现切换到 任务 OS_TickTask 
+	即 BSP_OSTickISRHandler 执行到半路,突然间,全换成 任务 OS_TickTask 的环境,
+	使用任务 OS_TickTask 的堆栈,然后 执行任务 OS_TickTask.
+	也就说,我们的中断还没有执行完,就直接从中断工作内容 跳到 任务 OS_TickTask
+	任务 OS_TickTask内容后,又执行了 OSSched() 回到了 任务A
+	但并不是,任务A被中断的工作, 
+	而是,任务A被中断后,执行的 BSP_OSTickISRHandler->OStimeTick->OSTaskSemPost()->OSSched()后的内容.
+	即 之前 BSP_OSTickISRHandler 还没做的一些收尾工作
+	而且,从任务B的堆栈 回到 使用 任务A的堆栈
+	BSP_OSTickISRHandler 结束后,回到 irqhandler 做收尾工作
+	最后回到 任务A原本的工作上去.
+	重新解释第 4 现象: 
+	4,开了时间片模式, 导致一个普通任务B,在某一刻处于很高的执行级别,还有OS_TickTask()优先级1,
+	  这时:	
+	  时刻1: 任务A执行XXX
+		->中断来了
+		->irqhandler 插入到 当前任务A的内容中 优先执行 
+		->irqhandler 跳到 BSP_OSTickISRHandler
+		->BSP_OSTickISRHandler->OStimeTick->OSTaskSemPost()->OSSched() 转到了 任务OS_TickTask 
+		->转回任务A,即回到任务A的堆栈, 执行之前 余下BSP_OSTickISRHandler
+		->执行 余下irqhandler
+		->回到 任务A被中断的位置 继续执行XXX
+	  时刻2: 任务A执行XXX
+		->中断来了
+		->irqhandler 插入到 当前任务A的内容中 优先执行 
+		->irqhandler 跳到 BSP_OSTickISRHandler
+		->BSP_OSTickISRHandler->OStimeTick->OSTaskSemPost()->OSSched() 转到了 任务OS_TickTask 
+		->任务OS_TickTask->OSSched() 转回任务A,即回到任务A的堆栈, 执行之前 余下BSP_OSTickISRHandler
+		->执行 余下irqhandler
+		->回到 任务A被中断的位置 继续执行XXX
+	  .....
+	  时刻1: 任务A执行XXX
+		->中断来了
+		->irqhandler 跳到 BSP_OSTickISRHandler
+		->BSP_OSTickISRHandler->OStimeTick->OSTaskSemPost()->OSSched() 转到了 任务OS_TickTask 
+		->任务OS_TickTask OSSched() 转到 任务B
+		->任务B 没有调用 OSSched()的地方,
+		->由于 执行的一半的 irqhandler, 没有机会执行余下irqhandler
+		->就是说中断开关一直被挂起,没有重新打开
+		->最后cpu 永远处于 ISR模式,永远执行 任务B
+	  除非任务B主动放弃:OS_RdyListMoveHeadtoTail()+OSSched() 或者 OS_RdyListRemove(),OSSched()
+	  才有机会回到任务A 执行余下BSP_OSTickISRHandler,有机会执行余下irqhandler 重新打开 中断开关
+现在大致知道如何实现时间片调度了(要自己加OSSched(),半自动)
+	要在 OSinit() 之后 打开时间片调度,
+	#if OS_CFG_SCHED_ROUND_ROBIN_EN  
+	OSSchedRoundRobinCfg(DEF_ENABLED,1,&err);  
+	#endif	
+	然后在 各个任务的while循环里 加入一句 OSSched() 就好了.
+	因为 TimeTick 会递减每个任务时间片并更新 readylist
+	时间未到 readylist未改变,OSSched()不发生什么,
+	时间到了 readylist改变,OSSched()就会调度一个新任务
+如何实现在中断离开时调度,即如何使用 OSIntEnter,OSIntExit,
+	一并讨论中断嵌套!!
+	特别注意到,运行OSCtxSw OSIntCtxSw(),OSSched() OSIntExit()的工作原理
+	例子:
+		任务A主动OSSched().OSCtxSw()后,直接跳到任务B执行
+		任务B主动OSSched().OSCtxSw()后,跳回任务A的OSSched().OSCtxSw()之后的代码
+	        任务A->OSSched(){            任务B->OSSched(){
+	                ......                       ......
+	                OSCtxSw()；   ------|        OSCtxSw()；   -----| 
+	              ______________	    |      ______________	|
+	                                    |                           |
+	                CPU_INI_EN(); <--|  |----->  CPU_INI_EN();      |
+	                .......          |           .......            |
+	                }                |           }                  |
+	                                 |                              |
+	                                 |------------------------------|
+	OSIntExit() 的 OSIntCtxSw() 也一样意思,
+	即当前中断调用 OSIntCtxSw() 就跑到别处了,并没有执行 OSIntExit()最后的CPU_INI_EN()操作!!
+	但是会在别处 补 执行 CPU_INI_EN()
+	别处 经 OSIntCtxSw() 跑回来当前,别处并没有执行 OSIntExit()最后的CPU_INI_EN()操作!!
+	但是会在当前 补 执行 CPU_INI_EN()	
+	OSIntEnter,OSIntExit一般用法是每次进中断服务函数时先OSIntEnter,退出时OSIntExit
+	当多次嵌套中断时,会有一个OSIntNestingCtr统计嵌套中断次数,
+	当最后一次嵌套中断退出时,最后一次OSIntExit会执行 OSIntCtxSw()进行调度!!
+	但是针对这个a5d2的板子,OSIntEnter,OSIntExit 并不能顺利使用!!
+	对比stm32的例子,真的是很不一样!!! stm32中断有NVIC机构,架构不一样,能用 OSIntEnter,OSIntExit 跳转!!
+开启时间片调度下:实现延时工作
+	开启时间片调度后,延时工作变得比较不可靠,
+	由于 TickTask 的优先级为10,比较低,
+	参加 时间片调度的 任务一般不会 把自己从rdylist挂起,只会放到队尾
+	所以迟迟无法执行 TickTask 更新计时器!! TickTask永远没机会执行的话,
+	时间片调度模式下, 执行 OSTimeDlyHMSM() 等延时工作相当慎重,
+	因为 OSTimeDlyHMSM() 会挂起当前任务!!,
+	ickTask永远没机会执行的话,意味着被挂起的延时任务永远都不会返回工作!!
+由于 OSIntCtxSw() 鸡肋,真正行使调度的只有 OSSched()->OSCtxSw().
+	而且避免在 中断过程中执行 OSSched()
+	要实现全部功能 ,需要修改 OSIntCtxSw();
+暂时凑合用:添加eth成功,开始移植 lwip 
+	就是把一堆eth_lwip工程相关的东西全塞到ucos3工程,修改 include路经 就是了
+	中间没有什么大波澜,小改了一些冲突内容就成功了,所以没来得及学习 lwip 相关内容
+必须验证中断处理 和 中断嵌套相关内容!!!
+	现有情况下把adc加过去了,成功运行adc和lwip共存,
+	虽然有中断,但是不能实行中断嵌套的极端情况,所以没有参考意义
+
+着手修改 OSIntCtxSw() 实现中断调度!!
+分析 a5d2_AIC:
+	127个中断源 datasheet:Peripheral Identifiers 记录中断源号号码
+	可以设置优先级:
+		Each interrupt source has a programmable priority level of 7 to 0,
+		which is user-definable by writing AIC_SMR.PRIOR. 
+		Level 7 is the high-est priority and level 0 the lowest.
+	中断嵌套:Interrupt Nesting:
+		The priority controller utilizes interrupt nesting
+			in order for the high priority interrupt to be handled
+			during the service of lower priority inter-rupts. 
+		This requires the interrupt service routines of the lower interrupts
+			to re-enable the interrupt at the processor level.
+		When an interrupt of a higher priority happens 
+			during an already occurring interrupt service routine, 
+			the nIRQ line is re-asserted. 
+		If the interrupt is enabled at the core level, 
+			the current execution is interrupted and the new interrupt service routine should read AIC_IVR. 
+		At this time, the current interrupt number and its priority level 
+			are pushed into an embedded hardware stack(硬件堆栈), 
+			so that they are saved and restored when the higher priority interrupt servicing 
+			is finished and AIC_EOICR is written.
+		The AIC is equipped with an 8-level wide hardware stack 
+			in order to support up to eight interrupt nestings to match the eight priority levels.
+	也就是,硬件自己处理中断嵌套,但是我们使用ucos时,如果要加入 中断调度, 
+		就必须使用中断服务函数添加 OSIntEnter 让ucos系统统计中断嵌套数,
+		离开中断服务函数时,要调用 OSIntExit 释放一次中断嵌套数
+		当中断嵌套数为0时,即说明我们在最后一个中断, 
+		于是就是执行 OSIntCtxSw() 调度
+	现在的问题是:
+		这中断调度 是直接把新Task 内容拷到 ISR模式下的 cpu:R0-R14 ,
+		也就说 cpu 自此永远在 ISR模式下运行
+		先写一个汇编 读取cpsr 内容 
+		发现无法读取 cpsr 的 内容,
+///////// 这段汇编的理解是错的
+	复习下:汇编 
+            EXTERN cpsrA
+            EXTERN BiliA	
+	    ;     
+	    LDR     R1, =cpsrA	       把地址变量变量 cpsrA 存的地址 读入到R1
+	    LDR     R0, =BiliA         把变量 BiliA 读入到R0
+	    STR     R0, [R1]	       把变量 BiliA 写入 地址变量cpsrA所指向的地址 里
+	    ;     
+	    LDR     R1, =cpsrA         把地址变量 cpsrA 存的地址 读入到R1
+	    LDR     R0, =BiliA         把地址变量 BiliA 存的地址 读入到R0
+	    LDR     R2, [R0]           把地址变量 BiliA 所指向的地址 的内容,读入到R2
+	    STR     R2, [R1]           把地址变量 BiliA 所指向地址的内容 写入 地址变量 cpsrA 所指向地址 里
+	    ;    
+	    LDR     R1, =cpsrA         把地址变量变量 cpsrA 存的地址 读入到R1
+	    LDR     R0, =BiliA         把变量 BiliA 读入到R0
+	    MOV     R2, R0             把 R0 的内容 放入 R2
+	    STR     R2, [R1]           把变量 BiliA 写入 地址变量cpsrA所指向的地址 里
+		特别注意, 这款芯片不能做立即数的操作!!
+		例如,我们知道 BiliA 值是 0x23,但是我们不能直接用这个句子 LDR     R1, =0x23
+		这是因为 a5d2 处理器有加密模块!!
+		LDR     R0, =BiliA 的 BiliA值 是加密了的 0x23
+		如果用直接数,系统认为 0x23 是某个数被加密过后的到的值,所以接着就出错了!!
+		cpsrA BiliA 是要有 EXTERN 声明的!
+	发现汇编还有些操作是不一样的 LDR 是一个相对操作, LDR     R1, =cpsrA 其实是错误操作
+	未知道如何导致出错
+	还有就是 MRS 读取寄存器内容后,无法顺利 STR 写入到内存里
+///////// 这段汇编的理解是错的
+	LDR     R0, =cpsrA	//把 cpsrA 的内容放入 R0
+	MRS     R1, CPSR	//把 CPSR 的内容放入 R1
+	STR     R1, [R0]	//把 R1 的内容放入 R0的内容所在的地方 cpsrA
+				//即用 R1 的内容 替换掉 cpsrA 里的内容
+				//即把 CPSR 的内容,放入 cpsrA 里
+	直接把 cpsr的值 发到了 cpsrA里了,而不是发到 cparA里存着的地址的那个地方
+	即 cpsrA 内容 B 为cpsrV的地址
+	这里 LDR 是把 B 放到了 R0,而不是把 内容为cpsrV的地址 放到R0
+
+The core contains one CPSR, and six SPSRs for exception handlers to use. The program status registers:
+
+User and
+System	 Monitor Supervisor Abort Undefined Interrupt Fast Interrupt
+R0 R0 R0 R0 R0 R0 R0
+R1 R1 R1 R1 R1 R1 R1
+R2 R2 R2 R2 R2 R2 R2
+R3 R3 R3 R3 R3 R3 R3
+R4 R4 R4 R4 R4 R4 R4
+R5 R5 R5 R5 R5 R5 R5
+R6 R6 R6 R6 R6 R6 R6
+R7 R7 R7 R7 R7 R7 R7
+R8 R8 R8 R8 R8 R8 R8_FIQ
+R9 R9 R9 R9 R9 R9 R9_FIQ
+R10 R10 R10 R10 R10 R10 R10_FIQ
+R11 R11 R11 R11 R11 R11 R11_FIQ
+R12 R12 R12 R12 R12 R12 R12_FIQ
+R13 R13_MON R13_SVC R13_ABT R13_UND R13_IRQ R13_FIQ
+R14 R14_MON R14_SVC R14_ABT R14_UND R14_IRQ R14_FIQ
+PC PC PC PC PC PC PC
+CPSR CPSR CPSR CPSR CPSR CPSR CPSR
+SPSR_MON SPSR_SVC SPSR_ABT SPSR_UND SPSR_IRQ SPSR_FIQ
+
+
+21.8.3.3
+Interrupt Handlers
+This section gives an overview of the fast interrupt handling sequence when using the AIC. It is assumed that the programmer understands
+the architecture of the ARM processor, and especially the Processor Interrupt modes and the associated status bits.
+It is assumed that:
+1. The Advanced Interrupt Controller has been programmed, AIC_SVR registers are loaded with corresponding interrupt service rou-
+   tine addresses and interrupts are enabled.
+2. The instruction at the ARM interrupt exception vector address is required to work with the vectoring. Load the PC with the absolute
+   address of the interrupt handler.
+When nIRQ is asserted, if the bit “I” of CPSR is 0, the sequence is as follows:
+1. The CPSR is stored in SPSR_irq, the current value of the Program Counter is loaded in the Interrupt link register (R14_irq) and the
+   Program Counter (R15) is loaded with 0x18. In the following cycle during fetch at address 0x1C, the ARM core adjusts R14_irq,
+   decrementing it by four.
+2. The ARM core enters Interrupt mode, if it has not already done so.
+3. When the instruction loaded at address 0x18 is executed, the program counter is loaded with the value read in AIC_IVR. Reading
+   AIC_IVR has the following effects:
+-Sets the current interrupt to be the pending and enabled interrupt with the highest priority. The current level is the priority level of
+ the current interrupt.
+-De-asserts the nIRQ line on the processor. Even if vectoring is not used, AIC_IVR must be read in order to de-assert nIRQ.
+-Automatically clears the interrupt, if it has been programmed to be edge-triggered.
+-Pushes the current level and the current interrupt number on to the stack.
+-Returns the value written in AIC_SVR corresponding to the current interrupt.
+4. The previous step has the effect of branching to the corresponding interrupt service routine. This should start by saving the link
+   register (R14_irq) and SPSR_IRQ. The link register must be decremented by four when it is saved if it is to be restored directly into
+   the program counter at the end of the interrupt. For example, the instruction SUB PC, LR, #4 may be used.
+5. Further interrupts can then be unmasked by clearing the “I” bit in CPSR, allowing re-assertion of the nIRQ to be taken into account
+   by the core. This can happen if an interrupt with a higher priority than the current interrupt occurs.
+6. The interrupt handler can then proceed as required, saving the registers that will be used and restoring them at the end. During this
+   phase, an interrupt of higher priority than the current level will restart the sequence from step 1.
+Note:  If the interrupt is programmed to be level-sensitive, the source of the interrupt must be cleared during this phase.
+7. The “I” bit in CPSR must be set in order to mask interrupts before exiting to ensure that the interrupt is completed in an orderly
+   manner.
+8. AIC_EOICR must be written in order to indicate to the AIC that the current interrupt is finished. This causes the current level to be
+popped from the stack, restoring the previous current level if one exists on the stack. If another interrupt is pending, with lower or
+equal priority than the old current level but with higher priority than the new current level, the nIRQ line is re-asserted, but the inter-
+rupt sequence does not immediately start because the “I” bit is set in the core. SPSR_irq is restored. Finally, the saved value of the
+link register is restored directly into the PC. This has the effect of returning from the interrupt to whatever was being executed
+before, and of loading the CPSR with the stored SPSR, masking or unmasking the interrupts depending on the state saved in
+SPSR_irq.
+Note:  The “I” bit in SPSR is significant. If it is set, it indicates that the ARM core was on the verge of masking an interrupt when the
+mask instruction was interrupted. Hence, when SPSR is restored, the mask instruction is completed (interrupt is masked).
+	上面是截取的是 a5d2芯片 的 AIC 和中断IRQ 如何工作.
+
+
+
+
+
+
+
+20180416
+	基本捋清 中断工作的基本脉络,
+	先纠正, ARM 架构 的通用寄存器 的错误 思维
+User and
+System	 Monitor  Supervisor Abort    Undefined Interrupt Fast-Interrupt
+(USER)   (MON)    (SVC)      (ABT)    (UND)     (IRQ)     (FIQ)
+R0       R0       R0         R0       R0        R0        R0
+R1       R1       R1         R1       R1        R1        R1
+R2       R2       R2         R2       R2        R2        R2
+R3       R3       R3         R3       R3        R3        R3
+R4       R4       R4         R4       R4        R4        R4
+R5       R5       R5         R5       R5        R5        R5
+R6       R6       R6         R6       R6        R6        R6
+R7       R7       R7         R7       R7        R7        R7
+R8       R8       R8         R8       R8        R8        R8_FIQ
+R9       R9       R9         R9       R9        R9        R9_FIQ
+R10      R10      R10        R10      R10       R10       R10_FIQ
+R11      R11      R11        R11      R11       R11       R11_FIQ
+R12      R12      R12        R12      R12       R12       R12_FIQ
+R13      R13_MON  R13_SVC    R13_ABT  R13_UND   R13_IRQ   R13_FIQ
+R14      R14_MON  R14_SVC    R14_ABT  R14_UND   R14_IRQ   R14_FIQ
+PC       PC       PC         PC       PC        PC        PC
+CPSR     CPSR     CPSR       CPSR     CPSR      CPSR      CPSR
+         SPSR_MON SPSR_SVC SPSR_ABT   SPSR_UND SPSR_IRQ  SPSR_FIQ
+	7种模式 : USER,MON,SVC,ABT,UND,IRQ,FIQ
+	r0-r7 寄存器 7种模式共用
+	r8-r12寄存器 除FIQ 的 6种模式模式共用
+	pc    寄存器 7种模式共用
+	cpsr  寄存器 7种模式共用
+	其他寄存器 各模式有自己专属的
+	USER 模式 没有 SPSR 寄存器
+然后纠正之前假设的中断运行过程 
+典型的中断过程:
+	中断触发时, 通用寄存器的内容保持不变,
+	把执行内容的当前位置放入lr后, pc直接跳到 irqHandler 
+	这时,sp 指针不变,还是指着当前Task_A,的堆栈.
+	还有关键的,并没有执行在所谓的IRQ模式下,因为读取CPSR内容时,发现 mode 没有设置 IRQ
+	即我们依然处于 当前Task环境,然后做了一些处理后,
+	bx r0  跳去执行真正的中断服务函数!!
+	执行完,回到 irqHandler 完成余下的收尾工作.
+	然后把之前的 lr 内容 放入 pc 回到 Task_A 本来的内容上去.
+	整个过程 都是在 Task_A环境下, 和使用着 Task_A 的堆栈 下 完成整个中断内容!!
+中断过程后,执行 Task 调度!
+	按照 原本 代码,中断服务函数的最后部分是 任务调度内容.
+	调度:置换 sp指针位置,到 Task_B堆栈的位置, 把Task_B 的内容换到 通用寄存器上来,
+	直接跳到 Task_B 位置 执行工作
+	这种情况下, 完全,不可能 跳回到 irqHandler 完成余下的工作,
+	相当于, 中断还没有完全执行完,就跳到了 Task_B 运行,环境堆栈都变成Task_B的
+	这时比较麻烦的原因之一是,irqHandler 的收尾工作.通知中断功能重新启动的命令,
+	而跳到 Task_B 工作后, Task_B 没有意识,也不会去 通知中断功能重新启动!
+假如我们,修改 中段调度时前通知中断功能重新启动!
+	中断服务函数的最后部分是 任务调度内容.
+	调度:	把当前环境内容推入Task_A的堆栈,
+		通知中断功能重新启动, 置换 sp指针位置,到 Task_B堆栈的位置, 
+		把Task_B 的内容换到 通用寄存器上来,
+		直接跳到 Task_B 位置 执行工作
+	下次 中断来了,Task_B 会调度 Task_A,
+	这时并不是直接跳回Task_A本来被中断的工作内容.
+	跳回的是, Task_A被中断后执行的中断服务函数中,调度内容以后余下的内容,
+	即会跳回, Task_A被中断后,中断还没有执行完的 irqHandler 余下的收尾工作,
+	收尾工作完成了,才会到 Task_A本来被中断的工作内容.
+	irqHandler 余下的收尾工作,包含的中断嵌套的处理内容
+	这样在中断强加调度的行为,并不推荐.
+	如果 Task_A,Task_B 本身没有什么复杂的,其他功能, 勉强可以使用,
+	但如果, Task 有 以太网协议工作的,有ADC工作的 就很容易冲突出问题.
+如果真想 中断中实现调度,
+	需要 统筹 AIC 重新设计 irqHandler 和 OSIntctSw
+	特别注意:
+	通知中断功能重新启动的工作:
+	//by william
+	msr         CPSR_c, #ARM_MODE_IRQ | I_BIT | F_BIT
+	msr         CPSR_c,  #0x12 | 0x80 | 0x40
+	//Acknowledge interrupt
+	ldr         lr, =AT91C_BASE_AIC
+	str         lr, [r14, #AIC_EOICR]
+最后,做阶段性总结后,ucos3移植 暂时告一段落:
+	由于 a5d2 的中断架构原因,
+	很难做到中断结束那刻调度任务 的功能,
+	因此 中断无法调用 OSIntEnter(),OSIntExit()
+	也因此无法 很好使用 时间片轮寻调度!!
+	如果要做时间片轮询调度,
+	要在 OSinit() 之后 打开时间片调度,
+	#if OS_CFG_SCHED_ROUND_ROBIN_EN  
+	OSSchedRoundRobinCfg(DEF_ENABLED,1,&err);  
+	#endif
+	要在 bsp_os 的时基中断函数 BSP_OSTickTSHandler 添加 OSIntEnter(),OSIntExit()
+	还得进一步修改 调度函数的 实际操作函数 OSTntCtxSw
+	OSIntCtxSw
+	    ;by william  这段是 重新启动中断的内容,但这里只演示不执行!!
+	    ;msr         CPSR_c, #ARM_MODE_IRQ | I_BIT | F_BIT
+	    ;msr         CPSR_c,  #0x12 | 0x80 | 0x40
+	    ; Acknowledge interrupt
+	    ;ldr         lr, =AT91C_BASE_AIC
+	    ;str         lr, [r14, #AIC_EOICR]
+	    
+	    ;by william 这段是 保存当前任务环境的内容
+	    ; SAVE CURRENT TASK'S CONTEXT:
+	    STMFD   SP!, {LR}                                           ;     Push return address,
+	    STMFD   SP!, {LR}
+	    STMFD   SP!, {R0-R12}                                       ;     Push registers,
+	    MRS     R0, CPSR                                            ;     Push current CPSR,
+	    TST     LR, #1                                              ;     See if called from Thumb mode,
+	    ORRNE   R0, R0, #OS_CPU_ARM_CONTROL_THUMB                   ;     If yes, set the T-bit.
+	    STMFD   SP!, {R0}
+	    ?OS_CPU_ARM_FP_REG_PUSH  R0
+	    CLREX                                                       ; Clear exclusive monitor.
+	    MOV32   R0, OSTCBCurPtr                                     ; OSTCBCurPtr->StkPtr = SP;
+	    LDR     R1, [R0]
+	    STR     SP, [R1] 
+	  
+	    ;by william  这段是 重新启动中断的内容,
+	    ldr         lr, =0xFC020000
+	    str         lr, [r14, #0x38]
+	
+	    ;by william  这段是 OSIntCtxSw原有内容,
+	    BL      OSTaskSwHook                                        ; OSTaskSwHook();
+	    MOV32   R0, OSPrioCur                                       ; OSPrioCur = OSPrioHighRdy;
+	    MOV32   R1, OSPrioHighRdy
+	    LDRB    R2, [R1]
+	    STRB    R2, [R0]
+	    MOV32   R0, OSTCBCurPtr                                     ; OSTCBCurPtr = OSTCBHighRdyPtr;
+	    MOV32   R1, OSTCBHighRdyPtr
+	    LDR     R2, [R1]
+	    STR     R2, [R0]
+	    LDR     SP, [R2]                                            ; SP = OSTCBHighRdyPtr->OSTCBStkPtr;
+	    ?OS_CPU_ARM_FP_REG_POP R0	                                                                ; RESTORE NEW TASK'S CONTEXT:
+	    LDMFD   SP!, {R0}                                           ;    Pop new task's CPSR,
+	    MSR     SPSR_cxsf, R0
+	    LDMFD   SP!, {R0-R12, LR, PC}^                              ;    Pop new task's context.
+	然后就可以做一些 简单的 Task 时间片, 然而复杂的Task并不能很好执行
+	主要还是 OSIntCtxSw, irqhandler 和 AIC控制器的关系
+	上述修改,实现时间片中断调度 还是有很多问题的.需要重先写整个中断系统才有意义!!
+	所以 目前 系统比较稳定的是做 主动调度 即不使用 OSIntEnter(),OSIntExit()
+	即 Task 主动在合适的位置 执行 OSSched(),或者延时函数!!
+	移植过程中遇到的一些主要内容:
+	OSIntNestingCtr 全局变量,记录中断嵌套!!
+	OSSSchedLockNestingCtr 全局变量,调度嵌套锁,每执行一次OSSchedLock()就上一次锁,目的是标记禁止调度
+	OSTickCtr 全局变量 时基中断计数变量,统计系统时钟滴答次数,
+		  理应该,每次时钟中断都得执行一次,但是由于在 TickTask 里更新,
+		  而TickTask优先级又相当低,而且是sem信号通知的,即 TickTask 不一定会及时执行,
+		  甚至不一定会执行,这就比较尴尬,就不知道有什么意义的
+	还有建立任务时,会给每个任务配置一个TCB结构,OSTickCtr在
+	TCB的u一些重要内容内容:
+	tcb->TimeQuanta : 任务被设置的时间片大小,与时间片调度有关
+	tcb->TimeQuantaCtr : 时间片计时 的操作变量
+	tcb->TickRemain , tcb->TickCtrPrev : 都是关于 Task 延时执行用到的延时计数器变量,
+					     根据不同操作模式,使用不同 计数器变量
+					     还有 要配合 OSTickCtr 使用!!
+	这里有个很严重的问题,TickTask 执行的时机问题
+	首先 TickTask 优先级过低, 系统不能比较准确地去执行 TickTask
+	TickTask 优先级比较高时, 时钟中断的sem信号一发出就直接调度去执行 TickTask,
+		也就中断函数,做了一半,叫跑到 TickTask
+		TickTask跑完,又没有调回到没有完成的中断函数,调到别处任务.
+		导致 系统崩溃, 芯片在别处任务死循环!
+	问题描述,
+		当芯片当前执行任务A时,时钟中断,插入执行 OSTimeTick()
+		OSTimeTick() 发出sem信号给 TickTask,
+		如果此刻 TickTask的优先级 比 任务A优先级 高
+		当场转到 TickTask执行 ,	
+		TickTask执行完,执行 Ossched() 调度.
+		如果 发现 比 任务A优先级 高 的任务B在就绪队列,就跳去任务B执行
+		如果 发现 与任务A优先级相同优先级的任务C,在任务A前面,就跳去任务C执行
+		不管那个,都没有回到 任务A把余下的时钟中断任务执行完.
+		即没有回去 把中断开关重新打开,所以 芯片就会在任务B/C里死循环
+	官方建议 一般设置 TickTask 优先级是 比所有重要任务的优先级低, 
+	而 a5d2 这里不一样, TickTask 优先级一定要比其他所有任务的优先级别都要低,不然一定会出现上述问题!!
+	这同样是由于 移植的不完全性,要彻底解决这个问题,跟解决时间片调度一样
+	需要 重新设计 OSIntCtxSw, irqhandler 和 AIC控制 
+	添加一个功能,不管什么时候调度,调度后到达的新任务,一定要先检查中断总开关是否已经打开!!
+	这是迄今发现 的 中断总开关 重新打开的方法
+	    ;by william  这段是 重新启动中断的内容,但这里只演示不执行!!
+	    ;msr         CPSR_c, #ARM_MODE_IRQ | I_BIT | F_BIT
+	    ;msr         CPSR_c,  #0x12 | 0x80 | 0x40
+	    ; Acknowledge interrupt
+	    ;ldr         lr, =AT91C_BASE_AIC
+	    ;str         lr, [r14, #AIC_EOICR]
+
